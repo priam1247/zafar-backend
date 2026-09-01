@@ -1,0 +1,7 @@
+name = "zafar-dl"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+# Set the shared signing secret (must match the backend's
+# DOWNLOAD_SIGNING_SECRET) with:
+#   npx wrangler secret put DL_SECRET
