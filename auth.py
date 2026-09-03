@@ -76,6 +76,13 @@ def make_signed_download_url(file_id: str, file_name: str) -> str:
     exists only so the app still runs before you've deployed the Worker; do
     not leave it unset in production. Consider raising instead of falling
     back once you've confirmed the Worker is deployed.
+
+    Note that the fallback link is also *functionally* broken for this
+    project: the material is shared with the service account, not published
+    to "anyone with the link", so an unauthenticated drive.google.com/uc
+    request returns an HTML sign-in page rather than the PDF. If downloads
+    are serving HTML instead of files, an unset secret here is the first
+    thing to check.
     """
     if not settings.download_proxy_base_url or not settings.download_signing_secret:
         return f"https://drive.google.com/uc?export=download&id={file_id}"

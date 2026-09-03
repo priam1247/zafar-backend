@@ -137,10 +137,30 @@ export async function requestDownload(fileId, section = "papers") {
   return request(`/drive/download/${encodeURIComponent(fileId)}?section=${section}`, { method: "POST" });
 }
 
-/** Convenience: request the signed URL, then navigate the browser to it. */
+/**
+ * Convenience: request the signed URL, then start the download.
+ *
+ * Deliberately NOT window.location.assign(url): that navigates the whole
+ * tab to the proxy. Normally Content-Disposition: attachment means the page
+ * doesn't actually change — but the moment the proxy answers with anything
+ * other than a file (expired link, Drive outage, a Cloudflare error page),
+ * that response *replaces the app*. The user taps download and lands on an
+ * error page with their list, scroll position and session state gone.
+ *
+ * A hidden iframe keeps the download out-of-band: an attachment still
+ * downloads, and an error response just renders into a 0x0 frame we throw
+ * away instead of destroying the page.
+ */
 export async function download(fileId, section = "papers") {
   const { url } = await requestDownload(fileId, section);
-  window.location.assign(url);
+
+  const frame = document.createElement("iframe");
+  frame.style.display = "none";
+  frame.src = url;
+  document.body.appendChild(frame);
+  // 2 min is well past the point where the browser has taken over the
+  // transfer; removing the frame after that doesn't cancel the download.
+  setTimeout(() => frame.remove(), 120000);
 }
 
 // ---------------------------------------------------------------------

@@ -45,8 +45,19 @@ cd cloudflare-worker/download-proxy
 npx wrangler deploy
 npx wrangler secret put DL_SECRET
 # paste the SAME value as DOWNLOAD_SIGNING_SECRET from step 1
+npx wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON
+# paste the FULL service_account.json content — the same value the backend has
 ```
+Both secrets are required. The material folders are shared with the service
+account rather than published publicly, so the Worker has to authenticate to
+Drive as that service account to read a file; without
+`GOOGLE_SERVICE_ACCOUNT_JSON` every download returns 503.
+
 Copy the resulting `https://zafar-dl.<you>.workers.dev` URL into the backend's `DOWNLOAD_PROXY_BASE_URL` (step 2) and restart the backend.
+
+If a download fails, `npx wrangler tail zafar-dl` prints the exact reason —
+the Worker never throws, so you get a logged message and a plain HTTP status
+instead of Cloudflare's opaque "Error 1101" page.
 
 ## 5. Deploy the API proxy Worker (HTTPS front door)
 Your frontend will be HTTPS (Vercel/Netlify) but KataBump only serves plain HTTP — browsers silently block that (mixed content), so a second Worker fronts the API too.
