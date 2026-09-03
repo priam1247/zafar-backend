@@ -1,0 +1,15 @@
+services:
+  api:
+    build:
+      context: .
+      network: host
+    network_mode: host
+    environment:
+      PORT: "8000"
+      DATABASE_URL: sqlite:////data/zafar.db
+      IS_ALLOY: ${IS_ALLOY:-true}
+    volumes:
+      - zafar-data:/data
+
+volumes:
+  zafar-data:
