@@ -12,13 +12,23 @@
 function b64urlToBytes(s) {
   s = s.replace(/-/g, "+").replace(/_/g, "/");
   while (s.length % 4) s += "=";
-  const bin = atob(s);
+  // atob throws on any non-base64 character; a tampered/truncated ?sig=
+  // must be a 403, not an uncaught exception (Cloudflare Error 1101).
+  let bin;
+  try {
+    bin = atob(s);
+  } catch {
+    return null;
+  }
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes;
 }
 
 async function verifySignature(secret, fileId, exp, sigB64) {
+  const sigBytes = b64urlToBytes(sigB64);
+  if (!sigBytes || sigBytes.length !== 32) return false;
+
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(secret),
     { name: "HMAC", hash: "SHA-256" }, false,
@@ -26,49 +36,71 @@ async function verifySignature(secret, fileId, exp, sigB64) {
   );
   // crypto.subtle.verify is constant-time — resistant to timing attacks.
   return crypto.subtle.verify(
-    "HMAC", key, b64urlToBytes(sigB64),
+    "HMAC", key, sigBytes,
     new TextEncoder().encode(`${fileId}.${exp}`)
   );
 }
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const match = url.pathname.match(/^\/dl\/([A-Za-z0-9-_]+)$/);
-    if (!match) return new Response("Not found", { status: 404 });
-
-    const fileId = match[1];
-    const exp = url.searchParams.get("exp");
-    const sig = url.searchParams.get("sig");
-    const name = url.searchParams.get("name") || `${fileId}.pdf`;
-
-    if (!exp || !sig) return new Response("Missing signature", { status: 403 });
-    if (Date.now() / 1000 > Number(exp))
-      return new Response("Link expired — request a fresh one", { status: 403 });
-    if (!(await verifySignature(env.DL_SECRET, fileId, exp, sig)))
-      return new Response("Invalid signature", { status: 403 });
-
-    // cf.cacheEverything lets Cloudflare's edge cache the file body, so
-    // repeat downloads of popular papers never even hit Drive again.
-    const driveResp = await fetch(
-      `https://drive.google.com/uc?export=download&id=${fileId}`,
-      { cf: { cacheEverything: true, cacheTtl: 86400 }, redirect: "follow" }
-    );
-    if (!driveResp.ok)
-      return new Response("Upstream error fetching file", { status: 502 });
-
-    // Sanitize filename for the header (strip quotes/control chars).
-    const safeName = name.replace(/[^\w.\-()[\] ]/g, "_");
-
-    const headers = new Headers(driveResp.headers);
-    headers.set(
-      "Content-Disposition",
-      `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(name)}`
-    );
-    headers.set("X-Content-Type-Options", "nosniff");
-    headers.delete("set-cookie");
-
-    // Pass the body stream straight through — zero buffering.
-    return new Response(driveResp.body, { status: 200, headers });
+    try {
+      return await handle(request, env);
+    } catch (err) {
+      // Never let an exception escape: a throw here makes Cloudflare serve
+      // its own Error 1101 page, which the browser shows instead of the file.
+      console.error("download-proxy failure:", err && (err.stack || err.message));
+      return new Response("Download failed — please try again", {
+        status: 500,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
   },
 };
+
+async function handle(request, env) {
+  const url = new URL(request.url);
+  const match = url.pathname.match(/^\/dl\/([A-Za-z0-9-_]+)$/);
+  if (!match) return new Response("Not found", { status: 404 });
+
+  // An unset/empty secret makes crypto.subtle.importKey throw. Catch it
+  // here so a misconfigured deploy is a clear 503, not Error 1101.
+  if (!env.DL_SECRET) {
+    console.error("DL_SECRET is not configured on this Worker");
+    return new Response("Download proxy is misconfigured", { status: 503 });
+  }
+
+  const fileId = match[1];
+  const exp = url.searchParams.get("exp");
+  const sig = url.searchParams.get("sig");
+  const name = url.searchParams.get("name") || `${fileId}.pdf`;
+
+  if (!exp || !sig) return new Response("Missing signature", { status: 403 });
+  if (!/^\d+$/.test(exp)) return new Response("Invalid signature", { status: 403 });
+  if (Date.now() / 1000 > Number(exp))
+    return new Response("Link expired — request a fresh one", { status: 403 });
+  if (!(await verifySignature(env.DL_SECRET, fileId, exp, sig)))
+    return new Response("Invalid signature", { status: 403 });
+
+  // cf.cacheEverything lets Cloudflare's edge cache the file body, so
+  // repeat downloads of popular papers never even hit Drive again.
+  const driveResp = await fetch(
+    `https://drive.google.com/uc?export=download&id=${fileId}`,
+    { cf: { cacheEverything: true, cacheTtl: 86400 }, redirect: "follow" }
+  );
+  if (!driveResp.ok)
+    return new Response("Upstream error fetching file", { status: 502 });
+
+  // Sanitize filename for the header (strip quotes/control chars).
+  const safeName = name.replace(/[^\w.\-()[\] ]/g, "_");
+
+  const headers = new Headers(driveResp.headers);
+  headers.set(
+    "Content-Disposition",
+    `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(name)}`
+  );
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.delete("set-cookie");
+
+  // Pass the body stream straight through — zero buffering.
+  return new Response(driveResp.body, { status: 200, headers });
+}
