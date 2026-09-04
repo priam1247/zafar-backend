@@ -1,0 +1,3 @@
+name = "zafar-api"
+main = "api-proxy.js"
+compatibility_date = "2026-08-01"
