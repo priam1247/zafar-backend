@@ -1,0 +1,9 @@
+.env
+.git
+.gitignore
+*.db
+__pycache__/
+*.pyc
+tests/
+requirements-dev.txt
+service_account.json
