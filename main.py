@@ -118,12 +118,12 @@ async def db_unreachable_handler(request: Request, exc: OperationalError):
     )
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health():
     return {"status": "ok"}
 
 
-@app.get("/health/db")
+@app.api_route("/health/db", methods=["GET", "HEAD"])
 def health_db(db: Session = Depends(get_db)):
     """
     Separate from /health on purpose — this one actually touches the
