@@ -10,6 +10,7 @@ import datetime as dt
 import importlib.util
 import logging
 import os
+import re
 import sqlite3
 import sys
 
@@ -50,7 +51,15 @@ class FakeD1(d1_dbapi._Transport):
         self.db.execute("COMMIT")
         return {"success": True, "errors": [], "messages": [], "result": results}
 
+    # D1 refuses most PRAGMAs with "not authorized: SQLITE_AUTH". This allowlist
+    # is an assumption about which ones work; the app only needs table_info and
+    # the index/foreign-key introspection SQLAlchemy uses.
+    _ALLOWED_PRAGMAS = {"table_info", "index_list", "index_info", "foreign_key_list"}
+
     def _run(self, sql, params):
+        match = re.match(r"^\s*PRAGMA\s+(?:\w+\.)?(\w+)", sql, re.IGNORECASE)
+        if match and match.group(1).lower() not in self._ALLOWED_PRAGMAS:
+            raise sqlite3.DatabaseError("not authorized: SQLITE_AUTH")
         cur = self.db.execute(sql, params)
         rows = []
         if cur.description:
@@ -239,3 +248,41 @@ def test_migration_refuses_nonempty_target(tmp_path, fake):
 
     with pytest.raises(RuntimeError, match="refusing to merge"):
         migrate.copy_database(source, target, Base.metadata)
+
+
+def test_read_uncommitted_pragma_is_answered_locally(fake):
+    """SQLAlchemy runs PRAGMA read_uncommitted on every new connection. D1 refuses
+    it, so the driver must answer it itself (0 = read committed)."""
+    conn = d1_dbapi.connect(transport=fake)
+    cur = conn.cursor()
+    cur.execute("PRAGMA read_uncommitted")
+    assert cur.fetchone() == (0,)
+
+
+def test_engine_connects_when_d1_refuses_pragmas(fake):
+    """Regression: the first connection (dialect initialise) must not fail
+    with 'not authorized: SQLITE_AUTH' from PRAGMA read_uncommitted."""
+    engine = d1_dbapi.make_engine(fake)
+    with engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT 1").scalar_one() == 1
+
+
+def test_other_refused_pragmas_still_fail_honestly(fake):
+    conn = d1_dbapi.connect(transport=fake)
+    cur = conn.cursor()
+    with pytest.raises(d1_dbapi.OperationalError, match="SQLITE_AUTH"):
+        cur.execute("PRAGMA journal_mode=WAL")
+
+
+def test_table_xinfo_is_served_from_table_info(fake):
+    """SQLAlchemy 2.x uses PRAGMA table_xinfo for get_columns on every startup.
+    The driver must send table_info (which D1 allows) and add the 'hidden' column."""
+    conn = d1_dbapi.connect(transport=fake)
+    cur = conn.cursor()
+    cur.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)')
+    cur.execute('PRAGMA main.table_xinfo("t")')
+    names = [d[0] for d in cur.description]
+    assert names == ["cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"]
+    rows = cur.fetchall()
+    assert [r[1] for r in rows] == ["id", "name"]
+    assert all(r[-1] == 0 for r in rows)
