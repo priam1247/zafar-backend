@@ -1,12 +1,12 @@
 /**
- * HTTPS front door for the KataBump backend.
- * https://zafar-api.<you>.workers.dev/*  ->  http://147.135.213.72:20208/*
+ * HTTPS front door for the backend (now hosted on Koyeb).
+ * https://zafar-api.<you>.workers.dev/*  ->  https://bloody-brigitta-ahzafar-de9b1709.koyeb.app/*
  * Fixes mixed-content blocking (HTTPS frontend -> HTTP backend): browsers
  * silently block a request from an HTTPS page to a plain-HTTP API, with
  * no visible error other than the request never firing.
  */
 
-const ORIGIN = "http://147.135.213.72:20208"; // your KataBump allocation
+const ORIGIN = "https://bloody-brigitta-ahzafar-de9b1709.koyeb.app"; // Koyeb service (Frankfurt)
 
 export default {
   async fetch(request) {

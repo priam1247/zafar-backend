@@ -72,10 +72,33 @@ on the first live run:
 The automated tests use a fake D1 backed by SQLite. They cover the driver and the
 ORM, not the live endpoint.
 
-## Where the API runs
+## Where the API runs: Koyeb (Free, Frankfurt)
 
-D1 is only the database. The FastAPI app needs somewhere to run. Botkeep Free is
-the card-free option, but its documentation does not clearly say whether a
-web API can be reached on a public port. Confirm that before depending on it.
-The existing Cloudflare Worker at `cloudflare-worker/api-proxy/` still points at
-the old KataBump address. Update `ORIGIN` once the new host is decided.
+The Koyeb service `zafar-backend` runs on the Free plan in Frankfurt at
+`https://bloody-brigitta-ahzafar-de9b1709.koyeb.app`. Koyeb builds the existing
+`Dockerfile`, and `app.py` reads the `PORT` it sets.
+
+1. **Point the service at the new code.** The service currently deploys from
+   GitHub. Its source branch must contain `d1_dbapi.py` and the D1 changes.
+   Either merge the branch to `main`, or change the service's branch to
+   `arena/2cdfd4a3-zafar-backend`.
+2. **Set the environment variables.** Replace the old Neon `DATABASE_URL` and
+   keep the other variables (Drive, SMTP, download signing) as they are.
+   ```
+   DATABASE_URL=d1
+   CLOUDFLARE_ACCOUNT_ID=cd7a370efb7d93a2cf8406b284cbf471
+   D1_DATABASE_ID=a8dfc286-4f7b-4823-a241-b584db474748
+   ```
+   Put these in Koyeb **Secrets**, not plain variables:
+   - `CLOUDFLARE_API_TOKEN`
+   - `JWT_SECRET_KEY`
+3. **Health check.** Set it to `/health`, which doesn't touch the database.
+4. **Redeploy**, then open `/health/db`. It should return
+   `{"status": "ok", "db": "reachable"}`.
+
+The Cloudflare Worker at `cloudflare-worker/api-proxy/` has its `ORIGIN` set to
+this Koyeb URL. Redeploy the Worker with `wrangler deploy` so the frontend
+(`VITE_API_URL`) keeps working without changes.
+
+Koyeb's Free plan may sleep an idle service, so the first request after a quiet
+period can be slow. D1 itself adds no wake-up delay.
