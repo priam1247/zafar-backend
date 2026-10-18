@@ -136,10 +136,10 @@ def health():
 def health_db(db: Session = Depends(get_db)):
     """
     Separate from /health on purpose — this one actually touches the
-    database, so an external cron pinging this endpoint every few minutes
-    keeps Neon from auto-suspending too (not just Koyeb). A dead DB here
-    returns the clean 503 from db_unreachable_handler above instead of
-    just quietly failing.
+    database, so it's useful for checking that the DB is reachable. A dead
+    DB here returns the clean 503 from db_unreachable_handler above instead
+    of just quietly failing. Don't point an uptime pinger at it on Neon
+    (it keeps the compute awake and burns CU-hours); on D1 it's harmless.
     """
     db.execute(text("SELECT 1"))
     return {"status": "ok", "db": "reachable"}

@@ -11,7 +11,17 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 10080  # 7 days
 
+    # "d1" = Cloudflare D1 (needs the three settings below),
+    # "sqlite:///path/to/file.db" = local SQLite file,
+    # "postgresql://..." = Postgres (e.g. Neon).
     database_url: str = "sqlite:///./zafar.db"
+
+    # Cloudflare D1, used when database_url == "d1". The API token needs
+    # D1 Read and D1 Write for this database only. Keep it in the host's
+    # secret store, never in the repo.
+    cloudflare_account_id: str = ""
+    d1_database_id: str = ""
+    cloudflare_api_token: str = ""
 
     # Paste the full service_account.json content as this env var's value
     # (not a file path) — Koyeb's filesystem is ephemeral/container-only,

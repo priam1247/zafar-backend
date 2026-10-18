@@ -3,21 +3,37 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 
 from config import settings
 
+# Three backends, picked by DATABASE_URL:
+#   "d1"            -> Cloudflare D1 over its REST API (see d1_dbapi.py)
+#   "sqlite:///..." -> local SQLite file (WAL mode, for a server with a disk)
+#   "postgresql://" -> Postgres such as Neon (the original setup)
+IS_D1 = settings.database_url == "d1"
 is_sqlite = settings.database_url.startswith("sqlite")
 
-engine = create_engine(
-    settings.database_url,
-    connect_args=(
-        {"check_same_thread": False, "timeout": 15} if is_sqlite
-        # Postgres/psycopg2's default TCP connect timeout can run to a
-        # minute or more on some networks — which is exactly why a dead
-        # route to Supabase (network restriction, regional outage, etc.)
-        # made requests hang for "many seconds" before finally failing.
-        # Capped here so a real outage surfaces in ~5s, not a minute+.
-        else {"connect_timeout": 5}
-    ),
-    pool_pre_ping=not is_sqlite,
-)
+if IS_D1:
+    import d1_dbapi
+
+    engine = d1_dbapi.make_engine(
+        d1_dbapi.D1HTTPTransport(
+            settings.cloudflare_account_id,
+            settings.d1_database_id,
+            settings.cloudflare_api_token,
+        )
+    )
+else:
+    engine = create_engine(
+        settings.database_url,
+        connect_args=(
+            {"check_same_thread": False, "timeout": 15} if is_sqlite
+            # Postgres/psycopg2's default TCP connect timeout can run to a
+            # minute or more on some networks — which is exactly why a dead
+            # route to Supabase (network restriction, regional outage, etc.)
+            # made requests hang for "many seconds" before finally failing.
+            # Capped here so a real outage surfaces in ~5s, not a minute+.
+            else {"connect_timeout": 5}
+        ),
+        pool_pre_ping=not is_sqlite,
+    )
 
 if is_sqlite:
     @event.listens_for(engine, "connect")
