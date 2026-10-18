@@ -22,6 +22,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import logging
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -182,6 +183,19 @@ class D1HTTPTransport(_Transport):
 
 _TXN_WORDS = ("BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE")
 
+# PRAGMAs that D1 refuses ("not authorized: SQLITE_AUTH") but that SQLAlchemy
+# runs by itself. Answered locally with the value D1 actually has.
+# PRAGMA table_xinfo(...) (with optional "schema." prefix), rewritten to table_info.
+_TABLE_XINFO = re.compile(
+    r"^\s*PRAGMA\s+((?:\w+\.)?)table_xinfo\s*\(\s*(.*?)\s*\)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_LOCAL_PRAGMAS = {
+    # 0 = READ COMMITTED semantics, which is all D1 offers.
+    re.compile(r"^\s*PRAGMA\s+read_uncommitted\s*;?\s*$", re.IGNORECASE): ("read_uncommitted", 0),
+}
+
 
 def _is_transaction_control(sql: str) -> bool:
     parts = sql.strip().split(None, 1)
@@ -257,6 +271,12 @@ class Cursor:
         self._rows = []
         self._pos = 0
 
+    def _set_local_row(self, column: str, value) -> None:
+        self._reset()
+        self.description = ((column, None, None, None, None, None, None),)
+        self._rows = [(value,)]
+        self.rowcount = -1
+
     def _apply(self, result: dict) -> None:
         meta = result.get("meta") or {}
         rows = result.get("results") or []
@@ -279,12 +299,29 @@ class Cursor:
         if _is_transaction_control(operation):
             self._reset()
             return self
+        for pattern, (column, value) in _LOCAL_PRAGMAS.items():
+            if pattern.match(operation):
+                self._set_local_row(column, value)
+                return self
+        xinfo = _TABLE_XINFO.match(operation)
+        if xinfo:
+            return self._execute_table_xinfo(xinfo.group(1), xinfo.group(2))
         params = [_convert_param(p) for p in (parameters or ())]
         results = self._connection._transport.send({"sql": operation, "params": params})
         if results:
             self._apply(results[0])
         else:
             self._reset()
+        return self
+
+    def _execute_table_xinfo(self, schema: str, table: str):
+        """SQLAlchemy 2.x reads column info with PRAGMA table_xinfo, which D1 may
+        refuse. Send PRAGMA table_info instead and add the extra 'hidden' column
+        (always 0 here: D1 has no hidden or generated columns in our schema)."""
+        self.execute(f"PRAGMA {schema}table_info({table})")
+        if self._rows:
+            self.description = tuple(self.description) + (("hidden", None, None, None, None, None, None),)
+            self._rows = [tuple(row) + (0,) for row in self._rows]
         return self
 
     def executemany(self, operation: str, seq_of_parameters):
