@@ -57,8 +57,10 @@ class FakeD1(d1_dbapi._Transport):
     _ALLOWED_PRAGMAS = {"table_info", "index_list", "index_info", "foreign_key_list"}
 
     def _run(self, sql, params):
-        match = re.match(r"^\s*PRAGMA\s+(?:\w+\.)?(\w+)", sql, re.IGNORECASE)
-        if match and match.group(1).lower() not in self._ALLOWED_PRAGMAS:
+        match = re.match(r"^\s*PRAGMA\s+(?:(\w+)\s*\.\s*)?(\w+)", sql, re.IGNORECASE)
+        if match and match.group(1) and match.group(1).lower() == "temp":
+            raise sqlite3.DatabaseError("not authorized: SQLITE_AUTH")
+        if match and match.group(2).lower() not in self._ALLOWED_PRAGMAS:
             raise sqlite3.DatabaseError("not authorized: SQLITE_AUTH")
         cur = self.db.execute(sql, params)
         rows = []
@@ -286,3 +288,21 @@ def test_table_xinfo_is_served_from_table_info(fake):
     rows = cur.fetchall()
     assert [r[1] for r in rows] == ["id", "name"]
     assert all(r[-1] == 0 for r in rows)
+
+
+def test_create_all_on_empty_d1_probes_temp_schema(fake):
+    """Regression: on a fresh D1 database, SQLAlchemy's has_table() asks for
+    PRAGMA main.table_info (empty), then PRAGMA temp.table_info. D1 refuses the
+    temp one with SQLITE_AUTH, which crashed Koyeb startup."""
+    engine = d1_dbapi.make_engine(fake)
+    Base.metadata.create_all(bind=engine)  # must not raise
+    with engine.connect() as conn:
+        names = {r[0] for r in conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"users", "download_logs"} <= names
+
+
+def test_has_table_is_false_for_missing_table_without_temp_error(fake):
+    from sqlalchemy import inspect
+    engine = d1_dbapi.make_engine(fake)
+    assert inspect(engine).has_table("users") is False
