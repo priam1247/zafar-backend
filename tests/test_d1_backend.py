@@ -306,3 +306,74 @@ def test_has_table_is_false_for_missing_table_without_temp_error(fake):
     from sqlalchemy import inspect
     engine = d1_dbapi.make_engine(fake)
     assert inspect(engine).has_table("users") is False
+
+
+def test_zero_row_select_keeps_column_names(fake):
+    """Regression: D1 sends no column names for a SELECT with no rows. SQLAlchemy
+    needs them, otherwise an ORM lookup that finds nothing raised
+    NotImplementedError (login returned 500 for unknown emails)."""
+    conn = d1_dbapi.connect(transport=fake)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+    cur.execute("SELECT id, name AS label FROM t WHERE 0")
+    assert [d[0] for d in cur.description] == ["id", "label"]
+    assert cur.fetchall() == []
+
+
+def test_zero_row_non_select_has_no_description(fake):
+    conn = d1_dbapi.connect(transport=fake)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    cur.execute("DELETE FROM t WHERE 0")
+    assert cur.description is None
+
+
+def test_orm_lookup_with_no_match_returns_none(d1_session):
+    with d1_session() as db:
+        found = db.query(User).filter(
+            (User.email == "nobody@gmail.com") | (User.username == "nobody@gmail.com")
+        ).first()
+    assert found is None
+
+
+@pytest.fixture()
+def d1_client(d1_engine, monkeypatch):
+    """The real FastAPI app, with its DB dependency pointed at D1."""
+    import main
+    from database import get_db
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker as _sm
+
+    Session = _sm(bind=d1_engine, autoflush=False)
+
+    def _override():
+        db = Session()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    main.app.dependency_overrides[get_db] = _override
+    try:
+        with TestClient(main.app) as client:
+            yield client
+    finally:
+        main.app.dependency_overrides.pop(get_db, None)
+
+
+def test_login_unknown_email_is_401_not_500(d1_client):
+    resp = d1_client.post("/auth/login", data={"email": "nobody@gmail.com", "password": "123456"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Incorrect email or password"
+
+
+def test_login_with_verified_account_returns_token(d1_client, d1_session):
+    from auth import hash_password
+    with d1_session() as db:
+        db.add(User(username="troy", email="troy@gmail.com", name="Troy",
+                    hashed_password=hash_password("123456"), is_verified=True,
+                    verification_attempts=0, reset_attempts=0))
+        db.commit()
+    resp = d1_client.post("/auth/login", data={"email": "troy@gmail.com", "password": "123456"})
+    assert resp.status_code == 200
+    assert resp.json()["access_token"]

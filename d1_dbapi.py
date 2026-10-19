@@ -27,6 +27,12 @@ import sys
 import urllib.error
 import urllib.request
 
+try:  # used only to name the columns of zero-row SELECTs; see _select_column_names
+    import sqlglot
+    from sqlglot import exp as _sqlglot_exp
+except ImportError:  # pragma: no cover
+    sqlglot = None
+
 log = logging.getLogger(__name__)
 
 apilevel = "2.0"
@@ -252,6 +258,33 @@ class Connection:
             raise InterfaceError("connection is closed")
 
 
+def _is_select(sql: str) -> bool:
+    head = sql.lstrip()[:6].upper()
+    return head.startswith("SELECT") or head.startswith("WITH")
+
+
+def _select_column_names(sql: str):
+    """Names of the columns a SELECT returns, parsed from the SQL.
+
+    D1 sends no column names when a query returns zero rows. SQLAlchemy needs
+    the names even then (an ORM lookup that finds nothing still builds its
+    row processor), otherwise it fails with NotImplementedError. Returns None
+    if the names can't be determined reliably.
+    """
+    if sqlglot is None:
+        return None
+    try:
+        tree = sqlglot.parse_one(sql, read="sqlite")
+    except Exception:
+        return None
+    if not isinstance(tree, _sqlglot_exp.Select):
+        return None
+    names = list(tree.named_selects)
+    if not names or "*" in names or any(not n for n in names):
+        return None
+    return names
+
+
 class Cursor:
     arraysize = 1
 
@@ -282,7 +315,7 @@ class Cursor:
         self._rows = [(value,)]
         self.rowcount = -1
 
-    def _apply(self, result: dict) -> None:
+    def _apply(self, result: dict, select_columns=None) -> None:
         meta = result.get("meta") or {}
         rows = result.get("results") or []
         changes = meta.get("changes") or 0
@@ -294,6 +327,10 @@ class Cursor:
             columns = list(rows[0].keys())
             self.description = tuple((c, None, None, None, None, None, None) for c in columns)
             self._rows = [tuple(row.get(c) for c in columns) for row in rows]
+        elif select_columns:
+            # A SELECT with no rows still has columns; SQLAlchemy needs them.
+            self.description = tuple((c, None, None, None, None, None, None) for c in select_columns)
+            self._rows = []
         else:
             self.description = None
             self._rows = []
@@ -317,7 +354,8 @@ class Cursor:
         params = [_convert_param(p) for p in (parameters or ())]
         results = self._connection._transport.send({"sql": operation, "params": params})
         if results:
-            self._apply(results[0])
+            select_columns = _select_column_names(operation) if _is_select(operation) else None
+            self._apply(results[0], select_columns)
         else:
             self._reset()
         return self
