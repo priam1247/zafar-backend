@@ -191,6 +191,11 @@ _TABLE_XINFO = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# PRAGMA temp.<x>: D1 refuses these, and they have no meaning here anyway. D1
+# has no temp schema that outlives one request, so there are never any rows.
+# SQLAlchemy's has_table() checks temp after main, so this has to be answered.
+_TEMP_PRAGMA = re.compile(r"^\s*PRAGMA\s+temp\s*\.", re.IGNORECASE)
+
 _LOCAL_PRAGMAS = {
     # 0 = READ COMMITTED semantics, which is all D1 offers.
     re.compile(r"^\s*PRAGMA\s+read_uncommitted\s*;?\s*$", re.IGNORECASE): ("read_uncommitted", 0),
@@ -303,6 +308,9 @@ class Cursor:
             if pattern.match(operation):
                 self._set_local_row(column, value)
                 return self
+        if _TEMP_PRAGMA.match(operation):
+            self._reset()  # no description and no rows: SQLAlchemy reads this as "not found"
+            return self
         xinfo = _TABLE_XINFO.match(operation)
         if xinfo:
             return self._execute_table_xinfo(xinfo.group(1), xinfo.group(2))
