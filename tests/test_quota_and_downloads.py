@@ -141,3 +141,35 @@ def test_api_cors_allows_only_configured_https_origin(client):
 
     denied = client.get("/health", headers={"Origin": "http://library.zafarh.dpdns.org"})
     assert "access-control-allow-origin" not in denied.headers
+
+
+def test_each_section_has_an_independent_daily_quota(client, fake_drive_tree, verified_user_token):
+    headers = _auth_headers(verified_user_token)
+    sections_and_limits = {
+        "papers": 3,
+        "books": 2,
+        "notes": 3,
+        "marking-keys": 10,
+    }
+
+    for section, limit in sections_and_limits.items():
+        for _ in range(limit):
+            response = client.post(f"/drive/download/file-1?section={section}", headers=headers)
+            assert response.status_code == 200, (section, response.text)
+        blocked = client.post(f"/drive/download/file-1?section={section}", headers=headers)
+        assert blocked.status_code == 429
+        assert blocked.headers["retry-after"]
+
+    quota_response = client.get("/auth/quota", headers=headers)
+    assert quota_response.status_code == 200
+    quota = quota_response.json()
+    assert quota["papers_downloaded_today"] == 3
+    assert quota["papers_limit"] == 3
+    assert quota["books_downloaded_today"] == 2
+    assert quota["books_limit"] == 2
+    assert quota["notes_downloaded_today"] == 3
+    assert quota["notes_limit"] == 3
+    assert quota["marking_keys_downloaded_today"] == 10
+    assert quota["marking_keys_limit"] == 10
+    assert quota["papers_left"] == quota["books_left"] == 0
+    assert quota["notes_left"] == quota["marking_keys_left"] == 0

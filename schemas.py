@@ -74,6 +74,12 @@ class QuotaOut(BaseModel):
     books_downloaded_today: int
     books_limit: int
     books_left: int
+    notes_downloaded_today: int
+    notes_limit: int
+    notes_left: int
+    marking_keys_downloaded_today: int
+    marking_keys_limit: int
+    marking_keys_left: int
 
 
 class PaperOut(BaseModel):

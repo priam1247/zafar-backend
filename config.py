@@ -26,6 +26,8 @@ class Settings(BaseSettings):
 
     daily_paper_limit: int = 10
     daily_book_limit: int = 3
+    daily_notes_limit: int = 3
+    daily_marking_keys_limit: int = 10
 
     download_proxy_base_url: str = ""
     download_signing_secret: str = ""

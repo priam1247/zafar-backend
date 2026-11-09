@@ -54,7 +54,7 @@ class DownloadLog(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     file_id = Column(String, nullable=False)       # Google Drive file ID
     file_name = Column(String, nullable=False)
-    category = Column(String, nullable=False)      # "paper" or "book"
+    category = Column(String, nullable=False)      # quota bucket: paper, book, notes, or marking_keys
     downloaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     # False until the client confirms the bytes actually arrived (see
     # POST /drive/confirm). Quota counting treats an unconfirmed row as
