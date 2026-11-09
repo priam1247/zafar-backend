@@ -1,14 +1,16 @@
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, Request, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from auth import hash_password, verify_password, create_access_token, get_current_user
 from config import settings
+from errors import APIError
 from database import get_db
-from email_utils import send_code, send_reset_code
+from email_utils import deliver_reset_code, deliver_verification_code
 from models import User, DownloadLog
 from rate_limit import limit_request
 from schemas import (
@@ -25,6 +27,7 @@ from schemas import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 CODE_TTL_MINUTES = 10
 
@@ -124,41 +127,34 @@ def _quota_out(db: Session, user_id: int) -> QuotaOut:
 
 
 @router.post("/register", response_model=RegisterOut, status_code=status.HTTP_201_CREATED)
-def register(request: Request, payload: UserRegister, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def register(request: Request, payload: UserRegister, db: Session = Depends(get_db)):
     email = payload.email.lower()
     limit_request(request, "auth-register", email, limit=5, window=3600, ip_limit=60)
     existing = db.query(User).filter(User.email == email).first()
 
     if existing and existing.is_verified:
-        raise HTTPException(status_code=409, detail="An account with this email already exists")
+        raise APIError(status_code=409, detail="An account with this email already exists", code="verified")
+    if existing:
+        raise APIError(
+            status_code=409,
+            detail="An account exists but its email is not verified. Enter the code or request a new one.",
+            code="unverified",
+        )
 
     code = _new_code()
     expires = datetime.now(timezone.utc) + timedelta(minutes=CODE_TTL_MINUTES)
 
-    if existing:
-        # Unverified leftover from an earlier attempt — refresh it instead of
-        # bricking the email address. New password wins (they're re-registering).
-        existing.name = payload.name.strip()
-        existing.hashed_password = hash_password(payload.password)
-        existing.verification_code = code
-        existing.code_expires_at = expires
-        existing.verification_attempts = 0  # fresh code = a fresh set of attempts
-    else:
-        db.add(User(
-            email=email,
-            name=payload.name.strip(),
-            username=_generate_username(db, email),
-            hashed_password=hash_password(payload.password),
-            is_verified=False,
-            verification_code=code,
-            code_expires_at=expires,
-        ))
+    db.add(User(
+        email=email,
+        name=payload.name.strip(),
+        username=_generate_username(db, email),
+        hashed_password=hash_password(payload.password),
+        is_verified=False,
+        verification_code=code,
+        code_expires_at=expires,
+    ))
     db.commit()
-
-    # Returns instantly; SMTP happens after the response. Failures are logged
-    # by email_utils and the user can hit /auth/resend.
-    background_tasks.add_task(send_code, email, code)
-
+    deliver_verification_code(db, email, code)
     return RegisterOut(message="Code sent to your Gmail", email=email)
 
 
@@ -171,28 +167,31 @@ def verify(request: Request, payload: VerifyCode, db: Session = Depends(get_db))
     limit_request(request, "auth-verify", email, limit=20, window=600)
     user = db.query(User).filter(User.email == email).first()
     if not user:
-        raise HTTPException(status_code=404, detail="Account not found")
+        raise APIError(status_code=404, detail="Account not found", code="account_missing")
     if user.is_verified:
         return {"message": "Already verified"}
     if user.verification_attempts >= MAX_VERIFY_ATTEMPTS:
-        raise HTTPException(
+        raise APIError(
             status_code=429,
             detail="Too many incorrect attempts — request a new code",
+            code="too_many_attempts",
             headers={"Retry-After": "60", "X-Attempts-Remaining": "0"},
         )
     # Constant-time compare — no timing side-channel on the code.
     if not secrets.compare_digest(user.verification_code or "", payload.code):
         user.verification_attempts += 1
         db.commit()
-        raise HTTPException(
+        raise APIError(
             status_code=400,
             detail="Incorrect code",
+            code="code_invalid",
             headers={"X-Attempts-Remaining": str(max(0, MAX_VERIFY_ATTEMPTS - user.verification_attempts))},
         )
     if _expired(user.code_expires_at):
-        raise HTTPException(
+        raise APIError(
             status_code=400,
             detail="Code expired — request a new one",
+            code="code_expired",
             headers={"X-Attempts-Remaining": str(max(0, MAX_VERIFY_ATTEMPTS - user.verification_attempts))},
         )
 
@@ -205,12 +204,12 @@ def verify(request: Request, payload: VerifyCode, db: Session = Depends(get_db))
 
 
 @router.post("/resend")
-def resend(request: Request, payload: ResendCode, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def resend(request: Request, payload: ResendCode, db: Session = Depends(get_db)):
     email = payload.email.lower()
     limit_request(request, "auth-resend", email, limit=5, window=3600, ip_limit=60)
     user = db.query(User).filter(User.email == email).first()
     if not user or user.is_verified:
-        raise HTTPException(status_code=400, detail="Cannot resend a code for this account")
+        raise APIError(status_code=400, detail="Cannot resend a code for this account", code="resend_unavailable")
 
     code = _new_code()
     user.verification_code = code
@@ -218,7 +217,7 @@ def resend(request: Request, payload: ResendCode, background_tasks: BackgroundTa
     user.verification_attempts = 0  # fresh code = a fresh set of attempts
     db.commit()
 
-    background_tasks.add_task(send_code, email, code)
+    deliver_verification_code(db, email, code)
     return {"message": "New code sent"}
 
 
@@ -245,14 +244,16 @@ def login(
         .first()
     )
     if not user or not verify_password(password, user.hashed_password):
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
+            code="bad_credentials",
         )
     if not user.is_verified:
-        raise HTTPException(
+        raise APIError(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Email not verified. Check your Gmail for the code.",
+            code="email_not_verified",
         )
     return Token(access_token=create_access_token(user))
 
@@ -287,7 +288,6 @@ MAX_RESET_ATTEMPTS = 5
 def forgot_password(
     request: Request,
     payload: ForgotPassword,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """
@@ -305,7 +305,11 @@ def forgot_password(
         user.reset_code_expires_at = datetime.now(timezone.utc) + timedelta(minutes=CODE_TTL_MINUTES)
         user.reset_attempts = 0
         db.commit()
-        background_tasks.add_task(send_reset_code, email, code)
+        try:
+            deliver_reset_code(db, email, code)
+        except APIError as exc:
+            # Preserve the endpoint's account-enumeration-safe response.
+            logger.warning("Password reset email could not be sent (%s)", exc.code)
     return {"message": "If that email has an account, a reset code has been sent"}
 
 
@@ -317,32 +321,36 @@ def reset_password(request: Request, payload: ResetPassword, db: Session = Depen
     # Same "Incorrect or expired code" message whether the account doesn't
     # exist, no reset was ever requested, the code's wrong, or it expired —
     # doesn't leak which case it is, same principle as the endpoint above.
-    generic_error = HTTPException(status_code=400, detail="Incorrect or expired code")
+    generic_error = APIError(status_code=400, detail="Incorrect or expired code", code="code_invalid")
 
     if not user or not user.reset_code:
         raise generic_error
     if user.reset_attempts >= MAX_RESET_ATTEMPTS:
-        raise HTTPException(
+        raise APIError(
             status_code=429,
             detail="Too many incorrect attempts — request a new code",
+            code="too_many_attempts",
             headers={"Retry-After": "60", "X-Attempts-Remaining": "0"},
         )
     if not secrets.compare_digest(user.reset_code, payload.code):
         user.reset_attempts += 1
         db.commit()
-        raise HTTPException(
+        raise APIError(
             status_code=400,
             detail="Incorrect or expired code",
-            headers={"X-Attempts-Remaining": str(max(0, MAX_RESET_ATTEMPTS - user.reset_attempts)), "X-Error-Code": "code_invalid"},
+            code="code_invalid",
+            headers={"X-Attempts-Remaining": str(max(0, MAX_RESET_ATTEMPTS - user.reset_attempts))},
         )
     if _expired(user.reset_code_expires_at):
-        raise HTTPException(
+        raise APIError(
             status_code=400,
             detail="Incorrect or expired code",
-            headers={"X-Attempts-Remaining": str(max(0, MAX_RESET_ATTEMPTS - user.reset_attempts)), "X-Error-Code": "code_invalid"},
+            code="code_invalid",
+            headers={"X-Attempts-Remaining": str(max(0, MAX_RESET_ATTEMPTS - user.reset_attempts))},
         )
 
     user.hashed_password = hash_password(payload.new_password)
+    user.password_changed_at = datetime.now(timezone.utc)
     user.reset_code = None
     user.reset_code_expires_at = None
     user.reset_attempts = 0

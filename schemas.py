@@ -54,7 +54,6 @@ class UserOut(BaseModel):
     id: int
     name: str | None = None
     email: str | None = None
-    username: str | None = None
     is_verified: bool
     created_at: datetime
 

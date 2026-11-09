@@ -2,6 +2,7 @@ import os
 import uvicorn
 
 from main import app  # noqa: F401 — re-exported so `python app.py` or `uvicorn app:app` both work
+from config import settings
 
 if __name__ == "__main__":
     # Most hosts (Koyeb included) set PORT themselves and route traffic to
@@ -18,5 +19,5 @@ if __name__ == "__main__":
         limit_concurrency=50,  # shed load gracefully instead of OOMing
         timeout_keep_alive=15,
         proxy_headers=True,
-        forwarded_allow_ips="*",  # Koyeb terminates TLS and forwards the original client IP.
+        forwarded_allow_ips=settings.forwarded_allow_ips,
     )

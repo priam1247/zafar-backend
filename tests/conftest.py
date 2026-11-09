@@ -49,9 +49,13 @@ def db_session(monkeypatch):
 
 
 @pytest.fixture()
-def client(db_session):
+def client(db_session, monkeypatch):
     import main  # imported here so it binds to the patched engine/session
+    import email_utils
     from database import get_db
+
+    monkeypatch.setattr(email_utils, "send_code", lambda email, code: None)
+    monkeypatch.setattr(email_utils, "send_reset_code", lambda email, code: None)
 
     def _override_get_db():
         db = db_session()

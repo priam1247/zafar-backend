@@ -32,6 +32,8 @@ def _run_migrations():
     with engine.connect() as conn:
         if "email" not in cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR"))
+        if "password_changed_at" not in cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN password_changed_at TIMESTAMP"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users(email)"))
 
         if "is_verified" not in cols:
@@ -92,7 +94,9 @@ app = FastAPI(
     title="Zafar API",
     version="0.2.0",
     lifespan=lifespan,
-    # Disable interactive docs in production if you like: docs_url=None, redoc_url=None
+    docs_url="/docs" if settings.api_docs_enabled else None,
+    redoc_url="/redoc" if settings.api_docs_enabled else None,
+    openapi_url="/openapi.json" if settings.api_docs_enabled else None,
 )
 
 # Paper/book list JSON compresses ~85% — a real win on slow mobile connections.
@@ -118,33 +122,10 @@ async def private_api_responses(request: Request, call_next):
     return response
 
 
-def _error_code(status_code: int, detail: object) -> str | None:
-    message = str(detail).lower()
-    if "not verified" in message:
-        return "email_not_verified"
-    if "incorrect email or password" in message or "could not validate credentials" in message:
-        return "bad_credentials"
-    if "expired" in message:
-        return "code_expired"
-    if "incorrect code" in message:
-        return "code_invalid"
-    if "too many incorrect attempts" in message:
-        return "too_many_attempts"
-    if status_code == 429 and "daily download limit" in message:
-        return "limit_reached"
-    if "unknown section" in message:
-        return "section_unknown"
-    if "file not found" in message:
-        return "file_missing"
-    if "could not reach drive" in message:
-        return "drive_unreachable"
-    return None
-
-
 @app.exception_handler(HTTPException)
 async def http_error_handler(request: Request, exc: HTTPException):
     headers = dict(exc.headers or {})
-    code = _error_code(exc.status_code, exc.detail)
+    code = getattr(exc, "code", None)
     if code:
         headers.setdefault("X-Error-Code", code)
     if exc.status_code == 429:
