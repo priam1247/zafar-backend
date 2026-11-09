@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -12,6 +12,7 @@ from database import Base, engine, get_db
 import models  # noqa: F401 — must be imported so create_all sees the tables
 from routers import auth as auth_router
 from routers import drive as drive_router
+from config import settings
 
 
 def _run_migrations():
@@ -97,19 +98,57 @@ app = FastAPI(
 # Paper/book list JSON compresses ~85% — a real win on slow mobile connections.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
-# NOTE: allow_credentials=True with "*" is ignored by browsers per spec anyway.
-# You use Bearer tokens (not cookies), so credentials aren't needed at all.
-# Locked to the real frontend origin (zafarh.dpdns.org via GitHub Pages).
-# The http:// entry is only here for the window before GitHub Pages
-# finishes issuing its cert — once "Enforce HTTPS" is checked in the repo's
-# Pages settings, delete the http:// line and keep https:// only.
+# Browser origins are deployment configuration; the canonical production
+# origin is https://library.zafarh.dpdns.org. Bearer tokens do not use cookies.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://library.zafarh.dpdns.org", "http://library.zafarh.dpdns.org"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PATCH"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def private_api_responses(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(("/auth/", "/drive/")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _error_code(status_code: int, detail: object) -> str | None:
+    message = str(detail).lower()
+    if "not verified" in message:
+        return "email_not_verified"
+    if "incorrect email or password" in message or "could not validate credentials" in message:
+        return "bad_credentials"
+    if "expired" in message:
+        return "code_expired"
+    if "incorrect code" in message:
+        return "code_invalid"
+    if "too many incorrect attempts" in message:
+        return "too_many_attempts"
+    if status_code == 429 and "daily download limit" in message:
+        return "limit_reached"
+    if "unknown section" in message:
+        return "section_unknown"
+    if "file not found" in message:
+        return "file_missing"
+    if "could not reach drive" in message:
+        return "drive_unreachable"
+    return None
+
+
+@app.exception_handler(HTTPException)
+async def http_error_handler(request: Request, exc: HTTPException):
+    headers = dict(exc.headers or {})
+    code = _error_code(exc.status_code, exc.detail)
+    if code:
+        headers.setdefault("X-Error-Code", code)
+    if exc.status_code == 429:
+        headers.setdefault("Retry-After", "60")
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=headers)
 
 app.include_router(auth_router.router)
 app.include_router(drive_router.router)
@@ -124,6 +163,7 @@ async def db_unreachable_handler(request: Request, exc: OperationalError):
     return JSONResponse(
         status_code=503,
         content={"detail": "Database temporarily unreachable — please try again shortly"},
+        headers={"X-Error-Code": "db_unreachable", "Cache-Control": "no-store"},
     )
 
 

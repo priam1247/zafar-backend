@@ -83,11 +83,61 @@ def test_make_signed_download_url_is_verifiable(monkeypatch):
     assert params["sig"] == expected_b64
 
 
-def test_make_signed_download_url_falls_back_without_secret(monkeypatch):
+def test_make_signed_download_url_fails_without_signing_config(monkeypatch):
     import config
     monkeypatch.setattr(config.settings, "download_proxy_base_url", "")
     monkeypatch.setattr(config.settings, "download_signing_secret", "")
 
+    import pytest
+    from fastapi import HTTPException
     from auth import make_signed_download_url
-    url = make_signed_download_url("file-123", "Some Paper.pdf")
-    assert url == "https://drive.google.com/uc?export=download&id=file-123"
+    with pytest.raises(HTTPException, match="Download signing is not configured"):
+        make_signed_download_url("file-123", "Some Paper.pdf")
+
+
+def test_categories_endpoint_returns_distinct_sorted_categories(client, fake_drive_tree, verified_user_token):
+    response = client.get("/drive/categories?section=papers", headers=_auth_headers(verified_user_token))
+    assert response.status_code == 200
+    assert response.json() == ["Books", "MSCE Maneb"]
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_download_force_refreshes_stale_tree_before_404(client, monkeypatch, verified_user_token):
+    import routers.drive as drive_router
+
+    calls = []
+    fresh_file = {"id": "fresh-file", "name": "Fresh.pdf", "mimeType": "application/pdf", "size": "42", "category": "New"}
+
+    def list_files(_folder_id, max_depth=6, force_refresh=False):
+        calls.append(force_refresh)
+        return [fresh_file] if force_refresh else []
+
+    monkeypatch.setattr(drive_router, "list_files_recursive", list_files)
+    monkeypatch.setattr(drive_router, "_section_folder_id", lambda section: "resolved-folder-id")
+    response = client.post(
+        "/drive/download/fresh-file?section=papers",
+        headers=_auth_headers(verified_user_token),
+    )
+    assert response.status_code == 200
+    assert calls == [False, True]
+
+
+def test_drive_refresh_route_is_removed(client, verified_user_token):
+    response = client.post("/drive/refresh", headers=_auth_headers(verified_user_token))
+    assert response.status_code == 404
+
+
+def test_api_cors_allows_only_configured_https_origin(client):
+    allowed = client.options(
+        "/auth/login",
+        headers={
+            "Origin": "https://library.zafarh.dpdns.org",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == "https://library.zafarh.dpdns.org"
+
+    denied = client.get("/health", headers={"Origin": "http://library.zafarh.dpdns.org"})
+    assert "access-control-allow-origin" not in denied.headers

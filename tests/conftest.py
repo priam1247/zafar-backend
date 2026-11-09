@@ -8,6 +8,11 @@ import pytest
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-do-not-use-in-prod")
 os.environ.setdefault("DRIVE_ROOT_FOLDER_ID", "root-folder-id")
+os.environ.setdefault("GOOGLE_SERVICE_ACCOUNT_JSON", "{}")
+os.environ.setdefault("DOWNLOAD_PROXY_BASE_URL", "https://downloads.example.test")
+os.environ.setdefault("DOWNLOAD_SIGNING_SECRET", "test-download-signing-secret")
+os.environ.setdefault("SMTP_USER", "test@gmail.com")
+os.environ.setdefault("SMTP_PASS", "test-smtp-password")
 os.environ.setdefault("DAILY_PAPER_LIMIT", "3")
 os.environ.setdefault("DAILY_BOOK_LIMIT", "2")
 
@@ -56,6 +61,9 @@ def client(db_session):
             db.close()
 
     main.app.dependency_overrides[get_db] = _override_get_db
+    from rate_limit import _buckets, _lock
+    with _lock:
+        _buckets.clear()
     with TestClient(main.app) as c:
         yield c
     main.app.dependency_overrides.clear()
@@ -92,7 +100,7 @@ def fake_drive_tree(monkeypatch):
 @pytest.fixture()
 def verified_user_token(client, db_session):
     """Registers + verifies a user, returns a valid bearer token string."""
-    client.post("/auth/register", json={"email": "student@gmail.com", "password": "hunter22"})
+    client.post("/auth/register", json={"name": "Test Student", "email": "student@gmail.com", "password": "hunter22"})
 
     from models import User
     db = db_session()

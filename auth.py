@@ -33,10 +33,16 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def create_access_token(username: str) -> str:
+def create_access_token(user: User) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
     return jwt.encode(
-        {"sub": username, "exp": expire},
+        {
+            "sub": user.username,
+            "uid": user.id,
+            "name": user.name,
+            "email": user.email,
+            "exp": expire,
+        },
         settings.jwt_secret_key,
         algorithm=settings.jwt_algorithm,
     )
@@ -70,15 +76,10 @@ def make_signed_download_url(file_id: str, file_name: str) -> str:
     Signature = HMAC-SHA256(secret, f"{file_id}.{expiry}") — the Worker
     recomputes and compares it, so links can't be forged or reused after expiry.
 
-    SECURITY: if download_proxy_base_url or download_signing_secret is unset,
-    this falls back to a permanent, unsigned Drive link — which reopens the
-    exact quota-bypass hole this function exists to close. That fallback
-    exists only so the app still runs before you've deployed the Worker; do
-    not leave it unset in production. Consider raising instead of falling
-    back once you've confirmed the Worker is deployed.
+    Configuration is also validated at startup; this guard is defense in depth.
     """
     if not settings.download_proxy_base_url or not settings.download_signing_secret:
-        return f"https://drive.google.com/uc?export=download&id={file_id}"
+        raise HTTPException(status_code=500, detail="Download signing is not configured")
 
     expiry = int(time.time()) + settings.download_link_ttl_seconds
     msg = f"{file_id}.{expiry}".encode()

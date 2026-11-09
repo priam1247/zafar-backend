@@ -4,13 +4,16 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class UserRegister(BaseModel):
+    """Registration is Gmail-only because verification uses Gmail SMTP.
+
+    Relax this policy only after SMTP deliverability to other providers has
+    been tested and confirmed.
+    """
+
     name: str = Field(min_length=1, max_length=100)
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
 
-    # The verification email is sent via Gmail SMTP — restricting sign-ups
-    # to @gmail.com keeps that simple and avoids delivery issues to other
-    # providers before this has been tested more broadly.
     @field_validator("email")
     @classmethod
     def gmail_only(cls, v: str) -> str:
@@ -43,7 +46,7 @@ class ForgotPassword(BaseModel):
 
 class ResetPassword(BaseModel):
     email: EmailStr
-    code: str = Field(min_length=6, max_length=6)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
     new_password: str = Field(min_length=6, max_length=128)
 
 
