@@ -20,7 +20,9 @@ class Settings(BaseSettings):
 
     # Credentials/configuration required for the deployed application to work.
     google_service_account_json: str = ""
-    drive_root_folder_id: str = ""
+    # Established Zafar Materials (Sorted) Drive folder. Override with
+    # DRIVE_ROOT_FOLDER_ID only when the library root is intentionally changed.
+    drive_root_folder_id: str = "1SWv792HexEVx7tHaSBIZvgxKwgb6-lp4"
 
     daily_paper_limit: int = 10
     daily_book_limit: int = 3
@@ -58,7 +60,6 @@ class Settings(BaseSettings):
             "DOWNLOAD_PROXY_BASE_URL": "download_proxy_base_url",
             "DOWNLOAD_SIGNING_SECRET": "download_signing_secret",
             "GOOGLE_SERVICE_ACCOUNT_JSON": "google_service_account_json",
-            "DRIVE_ROOT_FOLDER_ID": "drive_root_folder_id",
             "SMTP_USER": "smtp_user",
             "SMTP_PASS": "smtp_pass",
         }
@@ -73,7 +74,6 @@ class Settings(BaseSettings):
             "DOWNLOAD_PROXY_BASE_URL": self.download_proxy_base_url,
             "DOWNLOAD_SIGNING_SECRET": self.download_signing_secret,
             "GOOGLE_SERVICE_ACCOUNT_JSON": self.google_service_account_json,
-            "DRIVE_ROOT_FOLDER_ID": self.drive_root_folder_id,
             "SMTP_USER": self.smtp_user,
             "SMTP_PASS": self.smtp_pass,
         }
