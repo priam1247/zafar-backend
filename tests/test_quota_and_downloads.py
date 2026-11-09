@@ -173,3 +173,46 @@ def test_each_section_has_an_independent_daily_quota(client, fake_drive_tree, ve
     assert quota["marking_keys_limit"] == 10
     assert quota["papers_left"] == quota["books_left"] == 0
     assert quota["notes_left"] == quota["marking_keys_left"] == 0
+
+
+def test_download_without_section_is_refused(client, fake_drive_tree, verified_user_token):
+    response = client.post(
+        "/drive/download/file-1",
+        headers=_auth_headers(verified_user_token),
+    )
+    assert response.status_code == 422
+
+
+def test_a_note_cannot_be_downloaded_as_a_paper(client, monkeypatch, verified_user_token):
+    """A file outside the requested section is refused without spending quota."""
+    import routers.drive as drive_router
+
+    papers = [{
+        "id": "file-1",
+        "name": "Paper One.pdf",
+        "mimeType": "application/pdf",
+        "size": "1000",
+        "category": "MSCE Maneb",
+    }]
+    notes = [{
+        "id": "note-1",
+        "name": "Note One.pdf",
+        "mimeType": "application/pdf",
+        "size": "1000",
+        "category": "Form 1",
+    }]
+
+    monkeypatch.setattr(drive_router, "_section_folder_id", lambda section: section)
+    monkeypatch.setattr(
+        drive_router,
+        "list_files_recursive",
+        lambda folder_id, max_depth=6, force_refresh=False: notes if folder_id == "notes" else papers,
+    )
+
+    headers = _auth_headers(verified_user_token)
+    refused = client.post("/drive/download/note-1?section=papers", headers=headers)
+    assert refused.status_code == 404
+
+    response = client.post("/drive/download/file-1?section=papers", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["quota"]["papers_downloaded_today"] == 1

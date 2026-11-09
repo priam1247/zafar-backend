@@ -176,7 +176,7 @@ def list_categories(
 def get_download_url(
     file_id: str,
     request: Request,
-    section: str = "papers",
+    section: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
