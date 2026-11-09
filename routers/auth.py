@@ -129,7 +129,7 @@ def _quota_out(db: Session, user_id: int) -> QuotaOut:
 @router.post("/register", response_model=RegisterOut, status_code=status.HTTP_201_CREATED)
 def register(request: Request, payload: UserRegister, db: Session = Depends(get_db)):
     email = payload.email.lower()
-    limit_request(request, "auth-register", email, limit=5, window=3600, ip_limit=60)
+    limit_request(request, "auth-register", email, limit=5, window=3600, ip_limit=0)
     existing = db.query(User).filter(User.email == email).first()
 
     if existing and existing.is_verified:
@@ -164,7 +164,7 @@ MAX_VERIFY_ATTEMPTS = 5
 @router.post("/verify")
 def verify(request: Request, payload: VerifyCode, db: Session = Depends(get_db)):
     email = payload.email.lower()
-    limit_request(request, "auth-verify", email, limit=20, window=600)
+    limit_request(request, "auth-verify", email, limit=20, window=600, ip_limit=0)
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise APIError(status_code=404, detail="Account not found", code="account_missing")
@@ -206,7 +206,7 @@ def verify(request: Request, payload: VerifyCode, db: Session = Depends(get_db))
 @router.post("/resend")
 def resend(request: Request, payload: ResendCode, db: Session = Depends(get_db)):
     email = payload.email.lower()
-    limit_request(request, "auth-resend", email, limit=5, window=3600, ip_limit=60)
+    limit_request(request, "auth-resend", email, limit=5, window=3600, ip_limit=0)
     user = db.query(User).filter(User.email == email).first()
     if not user or user.is_verified:
         raise APIError(status_code=400, detail="Cannot resend a code for this account", code="resend_unavailable")
@@ -234,7 +234,7 @@ def login(
     their old username in this same field.
     """
     identifier = email.strip().lower()
-    limit_request(request, "auth-login", identifier, limit=10, window=60)
+    limit_request(request, "auth-login", identifier, limit=10, window=60, ip_limit=0)
     # Emails are always stored lowercased (register/verify/resend all
     # .lower()), so a direct equality compare keeps the unique index
     # usable — func.lower(User.email) would force a full table scan.
@@ -297,7 +297,7 @@ def forgot_password(
     An email only actually goes out if the account exists and is verified.
     """
     email = payload.email.lower()
-    limit_request(request, "auth-forgot", email, limit=5, window=3600, ip_limit=60)
+    limit_request(request, "auth-forgot", email, limit=5, window=3600, ip_limit=0)
     user = db.query(User).filter(User.email == email).first()
     if user and user.is_verified:
         code = _new_code()
@@ -316,7 +316,7 @@ def forgot_password(
 @router.post("/reset-password")
 def reset_password(request: Request, payload: ResetPassword, db: Session = Depends(get_db)):
     email = payload.email.lower()
-    limit_request(request, "auth-reset", email, limit=20, window=600)
+    limit_request(request, "auth-reset", email, limit=20, window=600, ip_limit=0)
     user = db.query(User).filter(User.email == email).first()
     # Same "Incorrect or expired code" message whether the account doesn't
     # exist, no reset was ever requested, the code's wrong, or it expired —
