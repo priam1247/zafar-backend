@@ -12,6 +12,7 @@ biggest latency win regardless of transport.
 """
 
 import json
+import logging
 import threading
 import time
 from functools import lru_cache
@@ -23,6 +24,7 @@ DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 
 _tree_cache: dict[str, tuple[float, list]] = {}
 _tree_lock = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 @lru_cache
@@ -100,7 +102,7 @@ def find_child_folder(parent_id: str, name: str):
     return None
 
 
-def list_files_recursive(folder_id: str, max_depth: int = 6, force_refresh: bool = False):
+def list_files_recursive(folder_id: str, max_depth: int | None = None, force_refresh: bool = False):
     """
     Walks the folder tree under folder_id and returns every non-folder
     file found, cached in-process for settings.drive_cache_ttl_seconds.
@@ -108,6 +110,7 @@ def list_files_recursive(folder_id: str, max_depth: int = 6, force_refresh: bool
     parent folder (e.g. "MSCE Maneb", "Junior").
     """
     ttl = settings.drive_cache_ttl_seconds
+    max_depth = settings.drive_max_depth if max_depth is None else max_depth
     if not force_refresh and ttl > 0:
         hit = _tree_cache.get(folder_id)
         if hit and time.time() - hit[0] < ttl:
@@ -122,6 +125,12 @@ def list_files_recursive(folder_id: str, max_depth: int = 6, force_refresh: bool
 
         def _walk(fid, folder_name, depth):
             if depth > max_depth:
+                logger.warning(
+                    "Drive tree depth limit reached at folder id %s (depth %s, max %s); descendants omitted",
+                    fid,
+                    depth,
+                    max_depth,
+                )
                 return
             for item in list_children(fid):
                 if item["mimeType"] == "application/vnd.google-apps.folder":

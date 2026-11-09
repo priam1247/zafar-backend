@@ -31,13 +31,14 @@ def test_register_existing_verified_email_rejected(client, db_session):
 
     resp = client.post("/auth/register", json={"name": "Test Student", "email": "dup@gmail.com", "password": "other123"})
     assert resp.status_code == 409
+    assert resp.headers["x-error-code"] == "verified"
 
 
-def test_register_existing_unverified_email_reissues_code(client, db_session):
-    """Re-registering an unverified email should refresh the code, not 400."""
+def test_register_existing_unverified_email_returns_machine_code(client):
     client.post("/auth/register", json={"name": "Test Student", "email": "retry@gmail.com", "password": "first-pass"})
-    resp = client.post("/auth/register", json={"name": "Test Student", "email": "retry@gmail.com", "password": "second-pass"})
-    assert resp.status_code == 201
+    response = client.post("/auth/register", json={"name": "Test Student", "email": "retry@gmail.com", "password": "second-pass"})
+    assert response.status_code == 409
+    assert response.headers["x-error-code"] == "unverified"
 
 
 def test_verify_wrong_code_rejected(client):

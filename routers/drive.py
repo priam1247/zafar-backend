@@ -1,12 +1,15 @@
+import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from auth import get_current_user, make_signed_download_url
 from config import settings
+from errors import APIError
 from database import get_db
 from drive_service import find_child_folder, list_files_recursive, list_children
 from rate_limit import limit_request
@@ -15,6 +18,7 @@ from routers.auth import _count_today_by_category, _quota_out
 from schemas import DownloadUrlOut, PaperOut
 
 router = APIRouter(prefix="/drive", tags=["drive"])
+logger = logging.getLogger(__name__)
 
 # Matches the real "Zafar Materials (Sorted)" top-level layout and the
 # dashboard sidebar's nav sections. ?section=<key> picks which subtree
@@ -41,8 +45,7 @@ QUOTA_LIMIT_SETTING = {
     "marking_keys": "daily_marking_keys_limit",
 }
 
-# section -> (resolved_at, folder_id). Saves one Drive API round-trip on
-# every /papers request; folder IDs basically never change.
+# section -> (resolved_at, folder_id). Uses the same TTL as the Drive tree.
 _section_id_cache: dict[str, tuple[float, str]] = {}
 _section_lock = threading.Lock()
 
@@ -50,21 +53,22 @@ _section_lock = threading.Lock()
 def _section_folder_id(section: str) -> str:
     folder_name = SECTION_FOLDERS.get(section)
     if folder_name is None:
-        raise HTTPException(status_code=400, detail=f"Unknown section '{section}'")
+        raise APIError(status_code=400, detail=f"Unknown section '{section}'", code="section_unknown")
 
     hit = _section_id_cache.get(section)
-    if hit and time.time() - hit[0] < 3600:
+    if hit and time.time() - hit[0] < settings.drive_cache_ttl_seconds:
         return hit[1]
 
     with _section_lock:
         hit = _section_id_cache.get(section)
-        if hit and time.time() - hit[0] < 3600:
+        if hit and time.time() - hit[0] < settings.drive_cache_ttl_seconds:
             return hit[1]
         folder_id = find_child_folder(settings.drive_root_folder_id, folder_name)
         if folder_id is None:
-            raise HTTPException(
+            raise APIError(
                 status_code=404,
-                detail=f"'{folder_name}' folder not found directly under the Drive root",
+                detail="The requested library section is unavailable.",
+                code="section_unknown",
             )
         _section_id_cache[section] = (time.time(), folder_id)
         return folder_id
@@ -72,10 +76,10 @@ def _section_folder_id(section: str) -> str:
 
 def _require_root():
     if not settings.drive_root_folder_id:
-        raise HTTPException(
+        raise APIError(
             status_code=500,
-            detail="DRIVE_ROOT_FOLDER_ID is not set yet — fill it in once "
-            "the Apps Script sorter has finished building Zafar Materials (Sorted).",
+            detail="The library is not configured.",
+            code="library_unavailable",
         )
 
 
@@ -90,12 +94,10 @@ def drive_health(current_user: User = Depends(get_current_user)):
     try:
         children = list_children(settings.drive_root_folder_id)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Could not reach Drive: {exc}")
-    return {
-        "connected": True,
-        "root_folder_id": settings.drive_root_folder_id,
-        "top_level_items": [c["name"] for c in children],
-    }
+        logger.exception("Drive listing failed")
+        raise APIError(status_code=502, detail="The library could not be reached.", code="drive_unreachable")
+    folders = sum(1 for child in children if child.get("mimeType") == "application/vnd.google-apps.folder")
+    return {"connected": True, "top_level_items_count": len(children), "folders_count": folders}
 
 
 @router.get("/papers", response_model=list[PaperOut])
@@ -104,6 +106,8 @@ def list_papers(
     section: str = "papers",
     category: str | None = None,
     q: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -117,14 +121,15 @@ def list_papers(
     matches (case-insensitive). ?q=<text> filters by filename, case-
     insensitive substring match, applied server-side across the section.
     """
-    limit_request(request, "drive-papers", limit=120, window=60)
+    limit_request(request, "drive-papers", identifier=str(current_user.id), limit=240, window=60, ip_limit=2000)
     _require_root()
     try:
         files = list_files_recursive(_section_folder_id(section))  # cached: ~1ms warm
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Could not reach Drive: {exc}")
+        logger.exception("Drive listing failed")
+        raise APIError(status_code=502, detail="The library could not be reached.", code="drive_unreachable")
 
     if category:
         cl = category.strip().lower()
@@ -133,6 +138,8 @@ def list_papers(
         ql = q.strip().lower()
         files = [f for f in files if ql in f["name"].lower()]
 
+    pdf_files = [f for f in files if f.get("mimeType") == "application/pdf"]
+    pdf_files = pdf_files[offset:offset + limit]
     return [
         PaperOut(
             id=f["id"],
@@ -140,8 +147,7 @@ def list_papers(
             category=f.get("category"),
             size_bytes=int(f["size"]) if f.get("size") else None,
         )
-        for f in files
-        if f.get("mimeType") == "application/pdf"
+        for f in pdf_files
     ]
 
 
@@ -152,14 +158,15 @@ def list_categories(
     current_user: User = Depends(get_current_user),
 ):
     """Return the sorted immediate-parent folder names in a section."""
-    limit_request(request, "drive-categories", limit=120, window=60)
+    limit_request(request, "drive-categories", identifier=str(current_user.id), limit=240, window=60, ip_limit=2000)
     _require_root()
     try:
         files = list_files_recursive(_section_folder_id(section))
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Could not reach Drive: {exc}")
+        logger.exception("Drive listing failed")
+        raise APIError(status_code=502, detail="The library could not be reached.", code="drive_unreachable")
     return sorted(
         {
             f["category"].strip()
@@ -191,22 +198,20 @@ def get_download_url(
     _count_today_by_category), so a failed download doesn't permanently
     cost the user a slot.
 
-    The row lock below (with_for_update) makes the quota check-then-insert
-    atomic per user: a second concurrent request from the same user blocks
-    on the lock until the first one commits, so it sees the up-to-date
-    count instead of racing it. (No-op on SQLite — fine for local/dev; the
-    real protection is on Postgres, which is what's actually deployed.)
+    Quota enforcement and reservation are one conditional INSERT statement.
+    The database atomically evaluates the matching daily/TTL count and inserts
+    only while the category remains below its configured limit.
     """
-    limit_request(request, "drive-download", limit=30, window=60, identifier=str(current_user.id))
+    limit_request(request, "drive-download", limit=30, window=60, ip_limit=2000, identifier=str(current_user.id))
     _require_root()
     quota_category = SECTION_QUOTA_CATEGORY.get(section)
     if quota_category is None:
-        raise HTTPException(status_code=400, detail=f"Unknown section '{section}'")
+        raise APIError(status_code=400, detail=f"Unknown section '{section}'", code="section_unknown")
 
     # Validate against the cached tree first, then refresh once in case a new
     # upload is hidden behind the tree TTL.
-    section_folder_id = _section_folder_id(section)
     try:
+        section_folder_id = _section_folder_id(section)
         files = list_files_recursive(section_folder_id)
         meta = next((f for f in files if f["id"] == file_id), None)
         if meta is None:
@@ -215,43 +220,62 @@ def get_download_url(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Could not reach Drive: {exc}")
+        logger.exception("Drive listing failed")
+        raise APIError(status_code=502, detail="The library could not be reached.", code="drive_unreachable")
     if meta is None:
-        raise HTTPException(status_code=404, detail="File not found in this section")
+        raise APIError(status_code=404, detail="File not found in this section", code="file_missing")
 
-    # Locks this user's row for the rest of the transaction — serializes
-    # concurrent download requests from the same user so the count below
-    # can't be raced.
-    db.query(User).filter(User.id == current_user.id).with_for_update().first()
-
-    used = _count_today_by_category(db, current_user.id)[quota_category]
     limit = getattr(settings, QUOTA_LIMIT_SETTING[quota_category])
-    if used >= limit:
-        tomorrow = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    user_id = current_user.id
+    now = datetime.now(timezone.utc)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff = now - timedelta(seconds=settings.download_link_ttl_seconds)
+    # Close the authentication/read transaction before SQLite begins its
+    # statement-level conditional write; D1 commit is a no-op between requests.
+    db.commit()
+    inserted = db.execute(
+        text(
+            """
+            INSERT INTO download_logs
+                (user_id, file_id, file_name, category, downloaded_at, confirmed)
+            SELECT :uid, :fid, :name, :cat, :now, 0
+            WHERE (
+                SELECT COUNT(*) FROM download_logs
+                WHERE user_id = :uid AND category = :cat
+                  AND downloaded_at >= :midnight
+                  AND (confirmed = TRUE OR downloaded_at >= :cutoff)
+            ) < :limit
+            """
+        ),
+        {
+            "uid": user_id,
+            "fid": file_id,
+            "name": meta["name"],
+            "cat": quota_category,
+            "now": now,
+            "midnight": midnight,
+            "cutoff": cutoff,
+            "limit": limit,
+        },
+    )
+    if inserted.rowcount == 0:
+        tomorrow = midnight + timedelta(days=1)
         retry_after = max(1, int((tomorrow - datetime.now(timezone.utc)).total_seconds()))
-        raise HTTPException(
+        raise APIError(
             status_code=429,
             detail="Daily download limit reached",
-            headers={"Retry-After": str(retry_after), "X-Error-Code": "limit_reached"},
+            code="limit_reached",
+            headers={"Retry-After": str(retry_after)},
         )
-
-    log = DownloadLog(
-        user_id=current_user.id,
-        file_id=file_id,
-        file_name=meta["name"],
-        category=quota_category,
-        confirmed=False,
-    )
-    db.add(log)
+    download_id = inserted.lastrowid
     db.commit()
-    db.refresh(log)
 
     name = meta["name"] if meta["name"].lower().endswith(".pdf") else meta["name"] + ".pdf"
     return DownloadUrlOut(
-        download_id=log.id,
+        download_id=download_id,
         url=make_signed_download_url(file_id, name),
         expires_in=settings.download_link_ttl_seconds,
-        quota=_quota_out(db, current_user.id),
+        quota=_quota_out(db, user_id),
     )
 
 
@@ -273,7 +297,7 @@ def confirm_download(
         .first()
     )
     if log is None:
-        raise HTTPException(status_code=404, detail="Download not found")
+        raise APIError(status_code=404, detail="Download not found", code="file_missing")
     log.confirmed = True
     db.commit()
     return {"status": "confirmed"}

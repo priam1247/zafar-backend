@@ -226,7 +226,7 @@ def test_migration_copies_sqlite_data_into_d1(tmp_path, fake):
 
     target = d1_dbapi.make_engine(fake)
     copied = migrate.copy_database(source, target, Base.metadata)
-    assert copied == {"users": 2, "download_logs": 1}
+    assert copied == {"users": 2, "download_logs": 1, "email_send_counters": 0}
 
     with target.connect() as conn:
         rows = conn.execute(select(User.id, User.email, User.is_verified).order_by(User.id)).all()

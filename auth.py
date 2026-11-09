@@ -13,14 +13,16 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from database import get_db
+from errors import APIError
 from models import User
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=10)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-_credentials_error = HTTPException(          # module-level: built once, not per request
+_credentials_error = APIError(
     status_code=status.HTTP_401_UNAUTHORIZED,
     detail="Could not validate credentials",
+    code="bad_credentials",
     headers={"WWW-Authenticate": "Bearer"},
 )
 
@@ -34,13 +36,15 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(user: User) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
+    issued_at = datetime.now(timezone.utc)
+    expire = issued_at + timedelta(minutes=settings.jwt_expire_minutes)
     return jwt.encode(
         {
             "sub": user.username,
             "uid": user.id,
             "name": user.name,
             "email": user.email,
+            "iat": issued_at.timestamp(),
             "exp": expire,
         },
         settings.jwt_secret_key,
@@ -63,6 +67,13 @@ def get_current_user(
     user = db.query(User).filter(User.username == username).first()
     if user is None:
         raise _credentials_error
+    changed_at = user.password_changed_at
+    if changed_at is not None:
+        if changed_at.tzinfo is None:
+            changed_at = changed_at.replace(tzinfo=timezone.utc)
+        issued_at = payload.get("iat")
+        if not isinstance(issued_at, (int, float)) or float(issued_at) < changed_at.timestamp():
+            raise _credentials_error
     return user
 
 
@@ -79,7 +90,7 @@ def make_signed_download_url(file_id: str, file_name: str) -> str:
     Configuration is also validated at startup; this guard is defense in depth.
     """
     if not settings.download_proxy_base_url or not settings.download_signing_secret:
-        raise HTTPException(status_code=500, detail="Download signing is not configured")
+        raise APIError(status_code=500, detail="Download signing is not configured", code="download_signing_unavailable")
 
     expiry = int(time.time()) + settings.download_link_ttl_seconds
     msg = f"{file_id}.{expiry}".encode()

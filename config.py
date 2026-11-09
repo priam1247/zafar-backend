@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     daily_book_limit: int = 3
     daily_notes_limit: int = 3
     daily_marking_keys_limit: int = 10
+    email_daily_limit: int = 500
+    email_daily_warn_threshold: int = 400
+
+    # Operational settings
+    api_docs_enabled: bool = False
+    forwarded_allow_ips: str = "127.0.0.1"
+    drive_max_depth: int = 6
 
     download_proxy_base_url: str = ""
     download_signing_secret: str = ""

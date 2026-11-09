@@ -1,70 +1,106 @@
+import logging
 import smtplib
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
 from config import settings
+from errors import APIError
+
+logger = logging.getLogger(__name__)
+
+
+class EmailDeliveryError(RuntimeError):
+    """An SMTP attempt failed; the API must not report successful delivery."""
+
+
+def reserve_daily_email_send(db: Session) -> int:
+    """Atomically reserve one of the durable per-UTC-day Gmail send slots."""
+    now = datetime.now(timezone.utc)
+    day = now.date().isoformat()
+    result = db.execute(
+        text(
+            """
+            INSERT INTO email_send_counters (day, count) VALUES (:day, 1)
+            ON CONFLICT(day) DO UPDATE
+                SET count = email_send_counters.count + 1
+                WHERE email_send_counters.count < :daily_limit
+            """
+        ),
+        {"day": day, "daily_limit": settings.email_daily_limit},
+    )
+    reserved = result.rowcount > 0
+    db.commit()
+    if not reserved:
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        retry_after = max(1, int((tomorrow - now).total_seconds()))
+        raise APIError(
+            status_code=429,
+            detail="Daily email limit reached. Please try again tomorrow.",
+            code="email_daily_limit",
+            headers={"Retry-After": str(retry_after)},
+        )
+    count = db.execute(
+        text("SELECT count FROM email_send_counters WHERE day = :day"), {"day": day}
+    ).scalar_one()
+    if count >= settings.email_daily_warn_threshold:
+        logger.warning("Gmail daily send counter reached %s/%s", count, settings.email_daily_limit)
+    return int(count)
+
+
+def _send(email: str, subject: str, body: str) -> None:
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = settings.smtp_user
+    msg["To"] = email
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
+            server.starttls()
+            server.login(settings.smtp_user, settings.smtp_pass)
+            server.send_message(msg)
+    except (smtplib.SMTPException, OSError) as exc:
+        raise EmailDeliveryError("SMTP delivery failed") from exc
 
 
 def send_code(email: str, code: str) -> None:
-    """
-    Emails the 6-digit verification code via Gmail SMTP.
-
-    Run via FastAPI BackgroundTasks — never inline in a request, the Gmail
-    SMTP handshake takes 1-3s.
-
-    If smtp_user/smtp_pass aren't set (e.g. local dev, or before the
-    KataBump env vars are configured), this just prints the code to the
-    server console instead of raising — same "works with zero setup"
-    philosophy as the rest of config.py's defaults.
-    """
-    if not settings.smtp_user or not settings.smtp_pass:
-        print(f"\n[DEV] Verification code for {email}: {code}\n")
-        return
-
-    msg = MIMEText(
+    _send(
+        email,
+        "Your Zafar verification code",
         f"Your Zafar verification code is: {code}\n\n"
-        "This code expires in 10 minutes. If you didn't request this, "
-        "you can ignore this email."
+        "This code expires in 10 minutes. If you didn't request this, you can ignore this email.",
     )
-    msg["Subject"] = "Your Zafar verification code"
-    msg["From"] = settings.smtp_user
-    msg["To"] = email
-
-    try:
-        # timeout: a Gmail hiccup must never pin a background thread forever
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
-            server.starttls()
-            server.login(settings.smtp_user, settings.smtp_pass)
-            server.send_message(msg)
-    except (smtplib.SMTPException, OSError) as exc:
-        # This runs as a background task — an exception here would
-        # otherwise vanish silently instead of surfacing anywhere.
-        print(f"[EMAIL ERROR] Could not send code to {email}: {exc}")
 
 
 def send_reset_code(email: str, code: str) -> None:
-    """
-    Same delivery mechanism as send_code, but distinct wording — this is a
-    password-reset code, not an account-verification one, and a user
-    seeing "verification code" in their inbox after clicking "Forgot
-    password" would reasonably worry something's wrong.
-    """
-    if not settings.smtp_user or not settings.smtp_pass:
-        print(f"\n[DEV] Password reset code for {email}: {code}\n")
-        return
-
-    msg = MIMEText(
+    _send(
+        email,
+        "Your Zafar password reset code",
         f"Your Zafar password reset code is: {code}\n\n"
         "This code expires in 10 minutes. If you didn't request this, "
-        "you can safely ignore this email — your password will stay unchanged."
+        "you can safely ignore this email — your password will stay unchanged.",
     )
-    msg["Subject"] = "Your Zafar password reset code"
-    msg["From"] = settings.smtp_user
-    msg["To"] = email
 
+
+def deliver_verification_code(db: Session, email: str, code: str) -> None:
+    reserve_daily_email_send(db)
     try:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
-            server.starttls()
-            server.login(settings.smtp_user, settings.smtp_pass)
-            server.send_message(msg)
-    except (smtplib.SMTPException, OSError) as exc:
-        print(f"[EMAIL ERROR] Could not send reset code to {email}: {exc}")
+        send_code(email, code)
+    except EmailDeliveryError as exc:
+        logger.exception("Verification email delivery failed")
+        raise APIError(
+            status_code=503,
+            detail="We could not send your verification email. Please try again shortly.",
+            code="email_delivery_failed",
+        ) from exc
+
+
+def deliver_reset_code(db: Session, email: str, code: str) -> None:
+    reserve_daily_email_send(db)
+    try:
+        send_reset_code(email, code)
+    except EmailDeliveryError:
+        # Reset is deliberately enumeration-safe, so the caller still gets
+        # the same generic response for known and unknown addresses.
+        logger.exception("Password reset email delivery failed")

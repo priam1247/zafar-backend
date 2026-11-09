@@ -18,6 +18,7 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=True)
     hashed_password = Column(String, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    password_changed_at = Column(DateTime(timezone=True), nullable=True)
 
     is_verified = Column(Boolean, default=False, nullable=False)
     verification_code = Column(String, nullable=True)
@@ -70,3 +71,11 @@ class DownloadLog(Base):
     __table_args__ = (
         Index("ix_downloads_user_time", "user_id", "downloaded_at"),
     )
+
+
+class EmailSendCounter(Base):
+    """Durable per-UTC-day global Gmail send-attempt count."""
+    __tablename__ = "email_send_counters"
+
+    day = Column(String, primary_key=True)
+    count = Column(Integer, nullable=False, default=0)

@@ -1,7 +1,6 @@
 /**
  * Zafar signed download proxy.
- * Set ALLOWED_ORIGIN to the exact frontend origin, e.g.
- * https://library.zafarh.dpdns.org, and DL_SECRET to the backend signing secret.
+ * Set ALLOWED_ORIGIN to the exact frontend origin and DL_SECRET to the backend signing secret.
  */
 function b64urlToBytes(s) {
   s = s.replace(/-/g, "+").replace(/_/g, "/");
@@ -30,23 +29,27 @@ function withCors(response, request, env) {
   if (request.headers.get("Origin") === env.ALLOWED_ORIGIN) {
     headers.set("Access-Control-Allow-Origin", env.ALLOWED_ORIGIN);
     headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
-    headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, Range");
     headers.set("Access-Control-Max-Age", "86400");
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+function noStoreError(message, status) {
+  return new Response(message, { status, headers: { "Cache-Control": "no-store" } });
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const match = url.pathname.match(/^\/dl\/([A-Za-z0-9-_]+)$/);
-    if (!match) return withCors(new Response("Not found", { status: 404 }), request, env);
+    if (!match) return withCors(noStoreError("Not found", 404), request, env);
 
     if (request.method === "OPTIONS") {
       return withCors(new Response(null, { status: 204 }), request, env);
     }
     if (request.method !== "GET") {
-      return withCors(new Response("Method not allowed", { status: 405 }), request, env);
+      return withCors(noStoreError("Method not allowed", 405), request, env);
     }
 
     const fileId = match[1];
@@ -54,20 +57,29 @@ export default {
     const sig = url.searchParams.get("sig");
     const name = url.searchParams.get("name") || `${fileId}.pdf`;
 
-    if (!exp || !sig) return withCors(new Response("Missing signature", { status: 403 }), request, env);
+    if (!exp || !sig) return withCors(noStoreError("Missing signature", 403), request, env);
     if (Date.now() / 1000 > Number(exp)) {
-      return withCors(new Response("Link expired — request a fresh one", { status: 403 }), request, env);
+      return withCors(noStoreError("Link expired — request a fresh one", 403), request, env);
     }
     if (!(await verifySignature(env.DL_SECRET, fileId, exp, sig))) {
-      return withCors(new Response("Invalid signature", { status: 403 }), request, env);
+      return withCors(noStoreError("Invalid signature", 403), request, env);
     }
 
+    const upstreamHeaders = new Headers();
+    const range = request.headers.get("Range");
+    if (range) upstreamHeaders.set("Range", range);
+    // Deliberately do not set edge cache directives: Drive may return an HTML
+    // virus-scan interstitial, which must never be cached as a PDF.
     const driveResp = await fetch(
       `https://drive.google.com/uc?export=download&id=${fileId}`,
-      { cf: { cacheEverything: true, cacheTtl: 86400 }, redirect: "follow" }
+      { headers: upstreamHeaders, redirect: "follow" }
     );
-    if (!driveResp.ok) {
-      return withCors(new Response("Upstream error fetching file", { status: 502 }), request, env);
+    const contentType = driveResp.headers.get("Content-Type") || "";
+    if (/^text\/html(?:\s*;|$)/i.test(contentType)) {
+      return withCors(noStoreError("Upstream returned a non-PDF page", 502), request, env);
+    }
+    if (!driveResp.ok && driveResp.status !== 206) {
+      return withCors(noStoreError("Upstream error fetching file", 502), request, env);
     }
 
     const safeName = name.replace(/[^\w.\-()[\] ]/g, "_");
@@ -77,7 +89,8 @@ export default {
       `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(name)}`
     );
     headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("Cache-Control", "no-store");
     headers.delete("set-cookie");
-    return withCors(new Response(driveResp.body, { status: 200, headers }), request, env);
+    return withCors(new Response(driveResp.body, { status: driveResp.status, headers }), request, env);
   },
 };
