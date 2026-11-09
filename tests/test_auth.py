@@ -151,7 +151,14 @@ def test_login_token_contains_stable_user_claims(client, db_session):
 
 def test_wrong_verification_code_includes_remaining_attempts(client):
     client.post("/auth/register", json={"name": "Attempt Test", "email": "attempts@gmail.com", "password": "hunter22"})
-    response = client.post("/auth/verify", json={"email": "attempts@gmail.com", "code": "000000"})
+    response = client.post(
+        "/auth/verify",
+        json={"email": "attempts@gmail.com", "code": "000000"},
+        headers={"Origin": "https://library.zafarh.dpdns.org"},
+    )
     assert response.status_code == 400
     assert response.headers["x-error-code"] == "code_invalid"
     assert response.headers["x-attempts-remaining"] == "4"
+    assert response.headers["access-control-expose-headers"] == (
+        "X-Error-Code, X-Attempts-Remaining, Retry-After"
+    )

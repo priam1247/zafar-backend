@@ -17,4 +17,6 @@ if __name__ == "__main__":
         access_log=False,      # real CPU savings under load
         limit_concurrency=50,  # shed load gracefully instead of OOMing
         timeout_keep_alive=15,
+        proxy_headers=True,
+        forwarded_allow_ips="*",  # Koyeb terminates TLS and forwards the original client IP.
     )
