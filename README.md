@@ -14,8 +14,11 @@ The service intentionally fails during startup if any of these are blank:
 - `DOWNLOAD_PROXY_BASE_URL`
 - `DOWNLOAD_SIGNING_SECRET` (must match the Worker `DL_SECRET`)
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
-- `DRIVE_ROOT_FOLDER_ID`
 - `SMTP_USER` and `SMTP_PASS`
+
+`DRIVE_ROOT_FOLDER_ID` defaults to the established Zafar Materials (Sorted)
+folder (`1SWv792HexEVx7tHaSBIZvgxKwgb6-lp4`); override it only if the library
+root folder changes.
 
 The only supported registration domain is `@gmail.com`: the current code
 verification flow uses Gmail SMTP and the policy is validated at registration,
