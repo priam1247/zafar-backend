@@ -1,13 +1,15 @@
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from auth import get_current_user, make_signed_download_url
 from config import settings
 from database import get_db
-from drive_service import clear_cache, find_child_folder, list_files_recursive, list_children
+from drive_service import find_child_folder, list_files_recursive, list_children
+from rate_limit import limit_request
 from models import DownloadLog, User
 from routers.auth import _count_today_by_category, _quota_out
 from schemas import DownloadUrlOut, PaperOut
@@ -89,17 +91,9 @@ def drive_health(current_user: User = Depends(get_current_user)):
     }
 
 
-@router.post("/refresh")
-def refresh(current_user: User = Depends(get_current_user)):
-    """Call after uploading new material to Drive to bust the caches."""
-    clear_cache()
-    with _section_lock:
-        _section_id_cache.clear()
-    return {"status": "refreshed"}
-
-
 @router.get("/papers", response_model=list[PaperOut])
 def list_papers(
+    request: Request,
     section: str = "papers",
     category: str | None = None,
     q: str | None = None,
@@ -116,6 +110,7 @@ def list_papers(
     matches (case-insensitive). ?q=<text> filters by filename, case-
     insensitive substring match, applied server-side across the section.
     """
+    limit_request(request, "drive-papers", limit=120, window=60)
     _require_root()
     try:
         files = list_files_recursive(_section_folder_id(section))  # cached: ~1ms warm
@@ -143,9 +138,37 @@ def list_papers(
     ]
 
 
+@router.get("/categories", response_model=list[str])
+def list_categories(
+    request: Request,
+    section: str = "papers",
+    current_user: User = Depends(get_current_user),
+):
+    """Return the sorted immediate-parent folder names in a section."""
+    limit_request(request, "drive-categories", limit=120, window=60)
+    _require_root()
+    try:
+        files = list_files_recursive(_section_folder_id(section))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach Drive: {exc}")
+    return sorted(
+        {
+            f["category"].strip()
+            for f in files
+            if f.get("mimeType") == "application/pdf"
+            and isinstance(f.get("category"), str)
+            and f["category"].strip()
+        },
+        key=str.casefold,
+    )
+
+
 @router.post("/download/{file_id}", response_model=DownloadUrlOut)
 def get_download_url(
     file_id: str,
+    request: Request,
     section: str = "papers",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -167,15 +190,25 @@ def get_download_url(
     count instead of racing it. (No-op on SQLite — fine for local/dev; the
     real protection is on Postgres, which is what's actually deployed.)
     """
+    limit_request(request, "drive-download", limit=30, window=60, identifier=str(current_user.id))
     _require_root()
     quota_category = SECTION_QUOTA_CATEGORY.get(section)
     if quota_category is None:
         raise HTTPException(status_code=400, detail=f"Unknown section '{section}'")
 
-    # Validate the file actually exists in this section (cached tree — no
-    # Drive API call) and get its real name for the Content-Disposition.
-    files = list_files_recursive(_section_folder_id(section))
-    meta = next((f for f in files if f["id"] == file_id), None)
+    # Validate against the cached tree first, then refresh once in case a new
+    # upload is hidden behind the tree TTL.
+    section_folder_id = _section_folder_id(section)
+    try:
+        files = list_files_recursive(section_folder_id)
+        meta = next((f for f in files if f["id"] == file_id), None)
+        if meta is None:
+            files = list_files_recursive(section_folder_id, force_refresh=True)
+            meta = next((f for f in files if f["id"] == file_id), None)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach Drive: {exc}")
     if meta is None:
         raise HTTPException(status_code=404, detail="File not found in this section")
 
@@ -188,7 +221,13 @@ def get_download_url(
     limit = (settings.daily_paper_limit if quota_category == "paper"
              else settings.daily_book_limit)
     if used >= limit:
-        raise HTTPException(status_code=429, detail="Daily download limit reached")
+        tomorrow = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        retry_after = max(1, int((tomorrow - datetime.now(timezone.utc)).total_seconds()))
+        raise HTTPException(
+            status_code=429,
+            detail="Daily download limit reached",
+            headers={"Retry-After": str(retry_after), "X-Error-Code": "limit_reached"},
+        )
 
     log = DownloadLog(
         user_id=current_user.id,

@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
@@ -10,6 +10,7 @@ from config import settings
 from database import get_db
 from email_utils import send_code, send_reset_code
 from models import User, DownloadLog
+from rate_limit import limit_request
 from schemas import (
     UserRegister,
     UserOut,
@@ -112,12 +113,13 @@ def _quota_out(db: Session, user_id: int) -> QuotaOut:
 
 
 @router.post("/register", response_model=RegisterOut, status_code=status.HTTP_201_CREATED)
-def register(payload: UserRegister, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def register(request: Request, payload: UserRegister, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     email = payload.email.lower()
+    limit_request(request, "auth-register", email, limit=5, window=3600, ip_limit=60)
     existing = db.query(User).filter(User.email == email).first()
 
     if existing and existing.is_verified:
-        raise HTTPException(status_code=400, detail="An account with this email already exists")
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
 
     code = _new_code()
     expires = datetime.now(timezone.utc) + timedelta(minutes=CODE_TTL_MINUTES)
@@ -153,8 +155,9 @@ MAX_VERIFY_ATTEMPTS = 5
 
 
 @router.post("/verify")
-def verify(payload: VerifyCode, db: Session = Depends(get_db)):
+def verify(request: Request, payload: VerifyCode, db: Session = Depends(get_db)):
     email = payload.email.lower()
+    limit_request(request, "auth-verify", email, limit=20, window=600)
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -164,14 +167,23 @@ def verify(payload: VerifyCode, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=429,
             detail="Too many incorrect attempts — request a new code",
+            headers={"Retry-After": "60", "X-Attempts-Remaining": "0"},
         )
     # Constant-time compare — no timing side-channel on the code.
     if not secrets.compare_digest(user.verification_code or "", payload.code):
         user.verification_attempts += 1
         db.commit()
-        raise HTTPException(status_code=400, detail="Incorrect code")
+        raise HTTPException(
+            status_code=400,
+            detail="Incorrect code",
+            headers={"X-Attempts-Remaining": str(max(0, MAX_VERIFY_ATTEMPTS - user.verification_attempts))},
+        )
     if _expired(user.code_expires_at):
-        raise HTTPException(status_code=400, detail="Code expired — request a new one")
+        raise HTTPException(
+            status_code=400,
+            detail="Code expired — request a new one",
+            headers={"X-Attempts-Remaining": str(max(0, MAX_VERIFY_ATTEMPTS - user.verification_attempts))},
+        )
 
     user.is_verified = True
     user.verification_code = None
@@ -182,8 +194,9 @@ def verify(payload: VerifyCode, db: Session = Depends(get_db)):
 
 
 @router.post("/resend")
-def resend(payload: ResendCode, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def resend(request: Request, payload: ResendCode, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     email = payload.email.lower()
+    limit_request(request, "auth-resend", email, limit=5, window=3600, ip_limit=60)
     user = db.query(User).filter(User.email == email).first()
     if not user or user.is_verified:
         raise HTTPException(status_code=400, detail="Cannot resend a code for this account")
@@ -200,6 +213,7 @@ def resend(payload: ResendCode, background_tasks: BackgroundTasks, db: Session =
 
 @router.post("/login", response_model=Token)
 def login(
+    request: Request,
     email: str = Form(...),
     password: str = Form(...),
     db: Session = Depends(get_db),
@@ -210,6 +224,7 @@ def login(
     their old username in this same field.
     """
     identifier = email.strip().lower()
+    limit_request(request, "auth-login", identifier, limit=10, window=60)
     # Emails are always stored lowercased (register/verify/resend all
     # .lower()), so a direct equality compare keeps the unique index
     # usable — func.lower(User.email) would force a full table scan.
@@ -228,7 +243,7 @@ def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Email not verified. Check your Gmail for the code.",
         )
-    return Token(access_token=create_access_token(user.username))
+    return Token(access_token=create_access_token(user))
 
 
 @router.get("/me", response_model=UserOut)
@@ -259,7 +274,10 @@ MAX_RESET_ATTEMPTS = 5
 
 @router.post("/forgot-password")
 def forgot_password(
-    payload: ForgotPassword, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
+    request: Request,
+    payload: ForgotPassword,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ):
     """
     Always returns the same generic message whether or not the email is
@@ -268,6 +286,7 @@ def forgot_password(
     An email only actually goes out if the account exists and is verified.
     """
     email = payload.email.lower()
+    limit_request(request, "auth-forgot", email, limit=5, window=3600, ip_limit=60)
     user = db.query(User).filter(User.email == email).first()
     if user and user.is_verified:
         code = _new_code()
@@ -280,8 +299,9 @@ def forgot_password(
 
 
 @router.post("/reset-password")
-def reset_password(payload: ResetPassword, db: Session = Depends(get_db)):
+def reset_password(request: Request, payload: ResetPassword, db: Session = Depends(get_db)):
     email = payload.email.lower()
+    limit_request(request, "auth-reset", email, limit=20, window=600)
     user = db.query(User).filter(User.email == email).first()
     # Same "Incorrect or expired code" message whether the account doesn't
     # exist, no reset was ever requested, the code's wrong, or it expired —
@@ -294,13 +314,22 @@ def reset_password(payload: ResetPassword, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=429,
             detail="Too many incorrect attempts — request a new code",
+            headers={"Retry-After": "60", "X-Attempts-Remaining": "0"},
         )
     if not secrets.compare_digest(user.reset_code, payload.code):
         user.reset_attempts += 1
         db.commit()
-        raise generic_error
+        raise HTTPException(
+            status_code=400,
+            detail="Incorrect or expired code",
+            headers={"X-Attempts-Remaining": str(max(0, MAX_RESET_ATTEMPTS - user.reset_attempts)), "X-Error-Code": "code_invalid"},
+        )
     if _expired(user.reset_code_expires_at):
-        raise generic_error
+        raise HTTPException(
+            status_code=400,
+            detail="Incorrect or expired code",
+            headers={"X-Attempts-Remaining": str(max(0, MAX_RESET_ATTEMPTS - user.reset_attempts)), "X-Error-Code": "code_invalid"},
+        )
 
     user.hashed_password = hash_password(payload.new_password)
     user.reset_code = None
