@@ -43,8 +43,10 @@ See [`.env.example`](.env.example) for the complete environment reference.
   string `detail` and may provide `X-Error-Code`, `X-Attempts-Remaining`, and
   `Retry-After` headers.
 - Access tokens contain `sub` (internal username), `uid`, `name`, and `email`.
-- Login accepts email or a legacy username. Quotas are UTC calendar-day buckets;
-  notes and marking keys use the papers bucket.
+- Login accepts email or a legacy username. Quotas are separate UTC calendar-day
+  buckets: papers (10), books (3), notes (3), and marking keys (10), configurable
+  with `DAILY_PAPER_LIMIT`, `DAILY_BOOK_LIMIT`, `DAILY_NOTES_LIMIT`, and
+  `DAILY_MARKING_KEYS_LIMIT`. `/auth/quota` returns actual per-bucket usage.
 
 ## Run tests
 

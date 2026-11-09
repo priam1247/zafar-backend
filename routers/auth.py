@@ -69,7 +69,7 @@ def _expired(expires_at: datetime | None) -> bool:
 
 def _count_today_by_category(db: Session, user_id: int) -> dict[str, int]:
     """
-    Both quota counts in ONE indexed query instead of two.
+    All section quota counts in one indexed query.
 
     A row counts toward quota if it's confirmed (the bytes actually
     arrived — see POST /drive/confirm), OR if it's unconfirmed but still
@@ -97,7 +97,12 @@ def _count_today_by_category(db: Session, user_id: int) -> dict[str, int]:
         .all()
     )
     counts = dict(rows)
-    return {"paper": counts.get("paper", 0), "book": counts.get("book", 0)}
+    return {
+        "paper": counts.get("paper", 0),
+        "book": counts.get("book", 0),
+        "notes": counts.get("notes", 0),
+        "marking_keys": counts.get("marking_keys", 0),
+    }
 
 
 def _quota_out(db: Session, user_id: int) -> QuotaOut:
@@ -109,6 +114,12 @@ def _quota_out(db: Session, user_id: int) -> QuotaOut:
         books_downloaded_today=used["book"],
         books_limit=settings.daily_book_limit,
         books_left=max(0, settings.daily_book_limit - used["book"]),
+        notes_downloaded_today=used["notes"],
+        notes_limit=settings.daily_notes_limit,
+        notes_left=max(0, settings.daily_notes_limit - used["notes"]),
+        marking_keys_downloaded_today=used["marking_keys"],
+        marking_keys_limit=settings.daily_marking_keys_limit,
+        marking_keys_left=max(0, settings.daily_marking_keys_limit - used["marking_keys"]),
     )
 
 

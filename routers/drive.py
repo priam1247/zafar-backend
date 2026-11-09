@@ -26,12 +26,19 @@ SECTION_FOLDERS = {
     "marking-keys": "Marking Keys",
 }
 
-# Which quota bucket each section draws from.
+# Independent quota bucket for each section.
 SECTION_QUOTA_CATEGORY = {
     "papers": "paper",
     "books": "book",
-    "notes": "paper",
-    "marking-keys": "paper",
+    "notes": "notes",
+    "marking-keys": "marking_keys",
+}
+
+QUOTA_LIMIT_SETTING = {
+    "paper": "daily_paper_limit",
+    "book": "daily_book_limit",
+    "notes": "daily_notes_limit",
+    "marking_keys": "daily_marking_keys_limit",
 }
 
 # section -> (resolved_at, folder_id). Saves one Drive API round-trip on
@@ -218,8 +225,7 @@ def get_download_url(
     db.query(User).filter(User.id == current_user.id).with_for_update().first()
 
     used = _count_today_by_category(db, current_user.id)[quota_category]
-    limit = (settings.daily_paper_limit if quota_category == "paper"
-             else settings.daily_book_limit)
+    limit = getattr(settings, QUOTA_LIMIT_SETTING[quota_category])
     if used >= limit:
         tomorrow = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         retry_after = max(1, int((tomorrow - datetime.now(timezone.utc)).total_seconds()))
