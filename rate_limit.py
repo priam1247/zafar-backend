@@ -48,7 +48,13 @@ def limit_request(
     window: int,
     ip_limit: int | None = None,
 ) -> None:
-    ip = client_ip(request)
-    enforce_rate_limit(f"{scope}:ip:{ip}", ip_limit or limit, window)
+    """Limit by IP and, when supplied, by account identifier.
+
+    `ip_limit=None` keeps the IP ceiling equal to `limit`; set `ip_limit=0`
+    for account-keyed flows where many legitimate users may share one NAT.
+    """
+    if ip_limit != 0:
+        ip = client_ip(request)
+        enforce_rate_limit(f"{scope}:ip:{ip}", limit if ip_limit is None else ip_limit, window)
     if identifier:
         enforce_rate_limit(f"{scope}:id:{identifier.strip().lower()}", limit, window)
