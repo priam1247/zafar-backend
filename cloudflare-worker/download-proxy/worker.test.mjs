@@ -30,6 +30,18 @@ async function signedRequest(headers = {}) {
   );
 }
 
+test("new and legacy domains are supported through ALLOWED_ORIGINS", async () => {
+  const request = new Request("https://worker.example.test/missing", {
+    headers: { Origin: "https://studymw.netlibrary.dpdns.org" },
+  });
+  const response = await worker.fetch(request, {
+    ...env,
+    ALLOWED_ORIGINS: "https://studymw.netlibrary.dpdns.org, https://library.zafarh.dpdns.org",
+  });
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://studymw.netlibrary.dpdns.org");
+});
+
 test("HTML Drive interstitial returns an uncached 502", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response("<html>scan page</html>", {

@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Stored as CSV because the env contract is comma-separated; the public
     # allowed_origins property exposes the normalized list used by CORS.
     allowed_origins_csv: str = Field(
-        default="https://library.zafarh.dpdns.org",
+        default="https://studymw.netlibrary.dpdns.org,https://library.zafarh.dpdns.org",
         validation_alias="ALLOWED_ORIGINS",
     )
 

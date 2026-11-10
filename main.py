@@ -103,7 +103,7 @@ app = FastAPI(
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Browser origins are deployment configuration; the canonical production
-# origin is https://library.zafarh.dpdns.org. Bearer tokens do not use cookies.
+# origin is https://studymw.netlibrary.dpdns.org. Bearer tokens do not use cookies.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
