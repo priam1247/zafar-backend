@@ -8,8 +8,9 @@ if (!globalThis.crypto) Object.defineProperty(globalThis, "crypto", { value: web
 const source = await readFile(new URL("./worker.js", import.meta.url), "utf8");
 const workerModule = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 const worker = workerModule.default;
+const testOrigin = "https://library.example.test";
 const env = {
-  ALLOWED_ORIGIN: "https://library.example.test",
+  ALLOWED_ORIGINS: testOrigin,
   DL_SECRET: "unit-test-signing-secret",
 };
 
@@ -26,20 +27,24 @@ async function signedRequest(headers = {}) {
   const sig = Buffer.from(signature).toString("base64url");
   return new Request(
     `https://worker.example.test/dl/${fileId}?exp=${exp}&sig=${sig}&name=paper.pdf`,
-    { headers: { Origin: env.ALLOWED_ORIGIN, ...headers } }
+    { headers: { Origin: testOrigin, ...headers } }
   );
 }
 
-test("new and legacy domains are supported through ALLOWED_ORIGINS", async () => {
-  const request = new Request("https://worker.example.test/missing", {
+test("only the new production domain receives CORS permission", async () => {
+  const workerEnv = { ...env, ALLOWED_ORIGINS: "https://studymw.netlibrary.dpdns.org" };
+  const newDomainRequest = new Request("https://worker.example.test/missing", {
     headers: { Origin: "https://studymw.netlibrary.dpdns.org" },
   });
-  const response = await worker.fetch(request, {
-    ...env,
-    ALLOWED_ORIGINS: "https://studymw.netlibrary.dpdns.org, https://library.zafarh.dpdns.org",
+  const allowed = await worker.fetch(newDomainRequest, workerEnv);
+  assert.equal(allowed.status, 404);
+  assert.equal(allowed.headers.get("Access-Control-Allow-Origin"), "https://studymw.netlibrary.dpdns.org");
+
+  const oldDomainRequest = new Request("https://worker.example.test/missing", {
+    headers: { Origin: "https://library.zafarh.dpdns.org" },
   });
-  assert.equal(response.status, 404);
-  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://studymw.netlibrary.dpdns.org");
+  const denied = await worker.fetch(oldDomainRequest, workerEnv);
+  assert.equal(denied.headers.get("Access-Control-Allow-Origin"), null);
 });
 
 test("HTML Drive interstitial returns an uncached 502", async () => {

@@ -1,7 +1,6 @@
 /**
  * Zafar signed download proxy.
  * Set ALLOWED_ORIGINS to comma-separated exact frontend origins and DL_SECRET to the backend signing secret.
- * ALLOWED_ORIGIN remains supported as a legacy single-origin setting.
  */
 function b64urlToBytes(s) {
   s = s.replace(/-/g, "+").replace(/_/g, "/");
@@ -27,7 +26,7 @@ async function verifySignature(secret, fileId, exp, sigB64) {
 function withCors(response, request, env) {
   const headers = new Headers(response.headers);
   headers.append("Vary", "Origin");
-  const allowedOrigins = (env.ALLOWED_ORIGINS || env.ALLOWED_ORIGIN || "")
+  const allowedOrigins = (env.ALLOWED_ORIGINS || "")
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
