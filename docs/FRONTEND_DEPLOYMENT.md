@@ -1,22 +1,36 @@
 # Frontend origin and CORS deployment
 
-The canonical frontend origin is **`https://library.zafarh.dpdns.org`** (the
-hostname includes the `h` in `zafarh`). It is the only production origin to add
-by default. Use HTTPS only. The backend `ALLOWED_ORIGINS` environment variable
-and Cloudflare download Worker's `ALLOWED_ORIGIN` must agree exactly, including
-scheme and hostname. The browser frontend calls the API at the configured API
-base URL and fetches signed downloads from the Worker, so both services need
-matching CORS settings.
+The new canonical frontend origin is **`https://studymw.netlibrary.dpdns.org`**.
+Keep the previous **`https://library.zafarh.dpdns.org`** origin allowed while
+cutting over. The backend `ALLOWED_ORIGINS` and the download Worker's allowed
+origins must include the exact HTTPS origin(s), including scheme and hostname.
 
-If the frontend hostname changes, deploy in this order:
+## Cutover steps
 
-1. Add the new exact origin to backend `ALLOWED_ORIGINS` (comma-separated) and
-   set the Worker's `ALLOWED_ORIGIN` to the new origin.
-2. Deploy/restart the backend and Worker, then deploy the frontend.
-3. Verify `/auth/login` preflight/API access and both successful and expired
-   `/dl/*` browser fetches from the new origin.
-4. Remove the old origin only after the new deployment is verified.
+1. In the Koyeb backend service environment, set:
+   ```text
+   ALLOWED_ORIGINS=https://studymw.netlibrary.dpdns.org,https://library.zafarh.dpdns.org
+   ```
+   Redeploy/restart the backend so its CORS middleware permits requests from
+   the new frontend origin.
+2. In the Cloudflare **download-proxy Worker** settings, set its allowed-origin
+   variable(s) to both origins (comma-separated):
+   ```text
+   ALLOWED_ORIGINS=https://studymw.netlibrary.dpdns.org,https://library.zafarh.dpdns.org
+   ```
+   The worker continues to accept the legacy singular `ALLOWED_ORIGIN` setting,
+   but use `ALLOWED_ORIGINS` for the migration. Deploy the worker.
+3. In the Cloudflare `zafar-frontend` Worker domain settings, attach
+   `studymw.netlibrary.dpdns.org` to the **Production** environment and make it
+   the domain students use. The screenshot shows it already listed as a
+   Production custom domain; confirm its DNS/route is active before switching.
+4. Verify registration/login, API list requests, and signed downloads from the
+   new origin. Check both a successful download and an expired link.
+5. After the old hostname is no longer used, remove it from backend and
+   download-worker origin lists, then redeploy both.
 
-The download Worker returns CORS headers on success and error responses, and
-varies responses by `Origin`. The API permits `GET`, `POST`, `PATCH`, and
-`OPTIONS`; Bearer authorization and JSON content headers are allowed.
+The frontend's API base URL must still point to the existing API/API-proxy
+service; changing the website domain does not change the API origin. The API
+permits `GET`, `POST`, `PATCH`, and `OPTIONS`; Bearer authorization and JSON
+content headers are allowed. The download Worker returns CORS headers on
+success and error responses and varies responses by `Origin`.

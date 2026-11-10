@@ -127,8 +127,20 @@ def test_drive_refresh_route_is_removed(client, verified_user_token):
     assert response.status_code == 404
 
 
-def test_api_cors_allows_only_configured_https_origin(client):
+def test_api_cors_allows_new_and_legacy_https_origins_during_cutover(client):
+    new_origin = "https://studymw.netlibrary.dpdns.org"
     allowed = client.options(
+        "/auth/login",
+        headers={
+            "Origin": new_origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == new_origin
+
+    legacy = client.options(
         "/auth/login",
         headers={
             "Origin": "https://library.zafarh.dpdns.org",
@@ -136,10 +148,9 @@ def test_api_cors_allows_only_configured_https_origin(client):
             "Access-Control-Request-Headers": "content-type",
         },
     )
-    assert allowed.status_code == 200
-    assert allowed.headers["access-control-allow-origin"] == "https://library.zafarh.dpdns.org"
+    assert legacy.headers["access-control-allow-origin"] == "https://library.zafarh.dpdns.org"
 
-    denied = client.get("/health", headers={"Origin": "http://library.zafarh.dpdns.org"})
+    denied = client.get("/health", headers={"Origin": "http://studymw.netlibrary.dpdns.org"})
     assert "access-control-allow-origin" not in denied.headers
 
 
