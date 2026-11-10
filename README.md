@@ -1,9 +1,9 @@
 # Zafar Backend
 
-FastAPI backend for the Zafar learning-materials library. The frontend is
-moving to **`https://studymw.netlibrary.dpdns.org`**. During cutover, allow both
-that origin and the previous `https://library.zafarh.dpdns.org`; remove the old
-origin after the new domain is verified. See [the deployment notes](docs/FRONTEND_DEPLOYMENT.md).
+FastAPI backend for the Zafar learning-materials library. The production
+frontend origin is **`https://studymw.netlibrary.dpdns.org`**. Configure that
+exact origin in `ALLOWED_ORIGINS` and in the download Worker. See [the deployment
+notes](docs/FRONTEND_DEPLOYMENT.md).
 
 ## Required deployment settings
 
@@ -27,7 +27,7 @@ Do not broaden the policy until delivery to other providers has been tested.
 `ALLOWED_ORIGINS` is a comma-separated list of exact HTTPS origins, for example:
 
 ```text
-ALLOWED_ORIGINS=https://studymw.netlibrary.dpdns.org,https://library.zafarh.dpdns.org
+ALLOWED_ORIGINS=https://studymw.netlibrary.dpdns.org
 ```
 
 See [`.env.example`](.env.example) for the complete environment reference.

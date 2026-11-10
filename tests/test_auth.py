@@ -155,7 +155,7 @@ def test_wrong_verification_code_includes_remaining_attempts(client):
     response = client.post(
         "/auth/verify",
         json={"email": "attempts@gmail.com", "code": "000000"},
-        headers={"Origin": "https://library.zafarh.dpdns.org"},
+        headers={"Origin": "https://studymw.netlibrary.dpdns.org"},
     )
     assert response.status_code == 400
     assert response.headers["x-error-code"] == "code_invalid"
