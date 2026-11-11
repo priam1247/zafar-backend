@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     forwarded_allow_ips: str = "127.0.0.1"
     drive_max_depth: int = 6
 
+    # Optional second library source. Credentials are set in deployment secrets.
+    drime_api_key: str = ""
+    drime_api_url: str = "https://app.drime.cloud/api/v1"
+    drime_root_folder_id: str = "1016158780"
+    drime_workspace_id: int = 0
+    drime_papers_folder_names: str = "Primary,Mock,MANEB"
+    drime_books_folder_names: str = "Books"
+    drime_notes_folder_names: str = "Notes"
+    drime_marking_keys_folder_names: str = "Marking Keys,Marking Schemes"
+
     download_proxy_base_url: str = ""
     download_signing_secret: str = ""
     download_link_ttl_seconds: int = 300

@@ -19,6 +19,11 @@ The service intentionally fails during startup if any of these are blank:
 folder (`1SWv792HexEVx7tHaSBIZvgxKwgb6-lp4`); override it only if the library
 root folder changes.
 
+The optional Drime Cloud source can be enabled with `DRIME_API_KEY`; when
+configured, Drime PDFs are merged into the same Papers, Books, Notes, and
+Marking Keys sections and use the same account quotas as Google Drive. The
+Drime API key must be stored privately in Koyeb and the download-proxy Worker.
+
 The only supported registration domain is `@gmail.com`: the current code
 verification flow uses Gmail SMTP and the policy is validated at registration,
 so the frontend should explain/check that before the student enters a password.

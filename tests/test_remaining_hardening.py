@@ -188,11 +188,12 @@ def test_worker_rejects_html_without_caching_and_forwards_range():
     from pathlib import Path
 
     worker = Path("cloudflare-worker/download-proxy/worker.js").read_text()
-    assert "text\\/html" in worker
-    assert 'noStoreError("Upstream returned a non-PDF page", 502)' in worker
+    assert 'function isHtmlResponse(response)' in worker
+    assert 'errorResponse("Upstream returned a non-file page", 502)' in worker
     assert 'request.headers.get("Range")' in worker
     assert 'upstreamHeaders.set("Range", range)' in worker
-    assert "cacheEverything" not in worker
+    assert "cacheEverything: true" not in worker
+    assert "cacheTtl: 86400" not in worker
 
 
 def test_drive_depth_limit_logs_truncated_folder_id(monkeypatch, caplog):

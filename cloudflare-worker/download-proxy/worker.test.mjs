@@ -14,7 +14,7 @@ const env = {
   DL_SECRET: "unit-test-signing-secret",
 };
 
-async function signedRequest(headers = {}) {
+async function signedRequest(source = "google", headers = {}) {
   const fileId = "drive-file-123";
   const exp = String(Math.floor(Date.now() / 1000) + 60);
   const key = await crypto.subtle.importKey(
@@ -22,11 +22,11 @@ async function signedRequest(headers = {}) {
     { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
   );
   const signature = await crypto.subtle.sign(
-    "HMAC", key, new TextEncoder().encode(`${fileId}.${exp}`)
+    "HMAC", key, new TextEncoder().encode(`${source}.${fileId}.${exp}`)
   );
   const sig = Buffer.from(signature).toString("base64url");
   return new Request(
-    `https://worker.example.test/dl/${fileId}?exp=${exp}&sig=${sig}&name=paper.pdf`,
+    `https://worker.example.test/dl/${source}/${fileId}?exp=${exp}&sig=${sig}&name=paper.pdf`,
     { headers: { Origin: testOrigin, ...headers } }
   );
 }
@@ -56,8 +56,44 @@ test("HTML Drive interstitial returns an uncached 502", async () => {
   try {
     const response = await worker.fetch(await signedRequest(), env);
     assert.equal(response.status, 502);
-    assert.equal(response.headers.get("Cache-Control"), "no-store");
-    assert.equal(await response.text(), "Upstream returned a non-PDF page");
+    assert.equal(response.headers.get("Cache-Control"), "no-store, private");
+    assert.equal(response.headers.get("Cloudflare-CDN-Cache-Control"), "no-store");
+    assert.equal(await response.text(), "Upstream returned a non-file page");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Drime downloads use the Drime API key and preserve Range responses", async () => {
+  const originalFetch = globalThis.fetch;
+  let upstreamUrl;
+  let authorization;
+  let upstreamRange;
+  globalThis.fetch = async (url, options) => {
+    upstreamUrl = String(url);
+    authorization = options.headers.get("Authorization");
+    upstreamRange = options.headers.get("Range");
+    return new Response("drime partial bytes", {
+      status: 206,
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Range": "bytes 0-18/100",
+        "Accept-Ranges": "bytes",
+      },
+    });
+  };
+  try {
+    const drimeEnv = { ...env, DRIME_API_KEY: "private-test-api-key" };
+    const response = await worker.fetch(
+      await signedRequest("drime", { Range: "bytes=0-18" }),
+      drimeEnv
+    );
+    assert.equal(upstreamUrl, "https://app.drime.cloud/api/v1/file-entries/download/drive-file-123");
+    assert.equal(authorization, "Bearer private-test-api-key");
+    assert.equal(upstreamRange, "bytes=0-18");
+    assert.equal(response.status, 206);
+    assert.equal(response.headers.get("Content-Range"), "bytes 0-18/100");
+    assert.equal(await response.text(), "drime partial bytes");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -78,11 +114,12 @@ test("Range is forwarded and 206 response headers/body pass through", async () =
     });
   };
   try {
-    const response = await worker.fetch(await signedRequest({ Range: "bytes=0-12" }), env);
+    const response = await worker.fetch(await signedRequest("google", { Range: "bytes=0-12" }), env);
     assert.equal(upstreamRange, "bytes=0-12");
     assert.equal(response.status, 206);
     assert.equal(response.headers.get("Content-Range"), "bytes 0-12/100");
-    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.equal(response.headers.get("Cache-Control"), "no-store, private");
+    assert.equal(response.headers.get("Access-Control-Expose-Headers"), "Accept-Ranges, Content-Range, Content-Length");
     assert.equal(await response.text(), "partial bytes");
   } finally {
     globalThis.fetch = originalFetch;
