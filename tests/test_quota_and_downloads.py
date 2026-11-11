@@ -73,14 +73,21 @@ def test_make_signed_download_url_is_verifiable(monkeypatch):
     from auth import make_signed_download_url
     url = make_signed_download_url("file-123", "Some Paper.pdf")
 
-    assert url.startswith("https://zafar-dl.example.workers.dev/dl/file-123?")
+    assert url.startswith("https://zafar-dl.example.workers.dev/dl/google/file-123?")
     params = dict(p.split("=", 1) for p in url.split("?", 1)[1].split("&"))
     assert "exp" in params and "sig" in params
 
-    msg = f"file-123.{params['exp']}".encode()
+    msg = f"google.file-123.{params['exp']}".encode()
     expected_sig = hmac.new(b"test-signing-secret", msg, hashlib.sha256).digest()
     expected_b64 = base64.urlsafe_b64encode(expected_sig).decode().rstrip("=")
     assert params["sig"] == expected_b64
+
+    drime_url = make_signed_download_url("DrimeHash_123", "Drime Paper.pdf", source="drime")
+    assert drime_url.startswith("https://zafar-dl.example.workers.dev/dl/drime/DrimeHash_123?")
+    drime_params = dict(p.split("=", 1) for p in drime_url.split("?", 1)[1].split("&"))
+    drime_msg = f"drime.DrimeHash_123.{drime_params['exp']}".encode()
+    drime_sig = hmac.new(b"test-signing-secret", drime_msg, hashlib.sha256).digest()
+    assert drime_params["sig"] == base64.urlsafe_b64encode(drime_sig).decode().rstrip("=")
 
 
 def test_make_signed_download_url_fails_without_signing_config(monkeypatch):

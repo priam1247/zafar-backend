@@ -81,20 +81,16 @@ def get_current_user(
 # Signed download URLs (verified by the download-proxy Cloudflare Worker)
 # ---------------------------------------------------------------------------
 
-def make_signed_download_url(file_id: str, file_name: str) -> str:
-    """
-    Returns a Worker URL that expires after settings.download_link_ttl_seconds.
-    Signature = HMAC-SHA256(secret, f"{file_id}.{expiry}") — the Worker
-    recomputes and compares it, so links can't be forged or reused after expiry.
-
-    Configuration is also validated at startup; this guard is defense in depth.
-    """
+def make_signed_download_url(file_id: str, file_name: str, source: str = "google") -> str:
+    """Create a short-lived, source-bound Worker URL for a library file."""
     if not settings.download_proxy_base_url or not settings.download_signing_secret:
         raise APIError(status_code=500, detail="Download signing is not configured", code="download_signing_unavailable")
+    if source not in {"google", "drime"}:
+        raise APIError(status_code=500, detail="Download source is not supported", code="download_source_unavailable")
 
     expiry = int(time.time()) + settings.download_link_ttl_seconds
-    msg = f"{file_id}.{expiry}".encode()
+    msg = f"{source}.{file_id}.{expiry}".encode()
     sig = hmac.new(settings.download_signing_secret.encode(), msg, hashlib.sha256).digest()
     sig_b64 = base64.urlsafe_b64encode(sig).decode().rstrip("=")
     base = settings.download_proxy_base_url.rstrip("/")
-    return f"{base}/dl/{file_id}?exp={expiry}&sig={sig_b64}&name={quote(file_name)}"
+    return f"{base}/dl/{source}/{quote(file_id, safe='')}?exp={expiry}&sig={sig_b64}&name={quote(file_name)}"

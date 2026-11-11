@@ -12,6 +12,7 @@ from config import settings
 from errors import APIError
 from database import get_db
 from drive_service import find_child_folder, list_files_recursive, list_children
+import drime_service
 from rate_limit import limit_request
 from models import DownloadLog, User
 from routers.auth import _count_today_by_category, _quota_out
@@ -75,12 +76,30 @@ def _section_folder_id(section: str) -> str:
 
 
 def _require_root():
-    if not settings.drive_root_folder_id:
+    if not settings.drive_root_folder_id and not settings.drime_api_key:
         raise APIError(
             status_code=500,
             detail="The library is not configured.",
             code="library_unavailable",
         )
+
+
+def _list_section_files(section: str, force_refresh: bool = False) -> list[dict]:
+    """Combine Google Drive and optional Drime entries for one library section."""
+    files: list[dict] = []
+    if settings.drive_root_folder_id:
+        try:
+            folder_id = _section_folder_id(section)
+        except APIError as exc:
+            # A section may exist only in Drime while the current Google
+            # Drive source remains configured for the other sections.
+            if exc.code != "section_unknown" or not settings.drime_api_key:
+                raise
+        else:
+            files.extend(list_files_recursive(folder_id, force_refresh=force_refresh))
+    if settings.drime_api_key:
+        files.extend(drime_service.list_section_files(section, force_refresh=force_refresh))
+    return files
 
 
 @router.get("/health")
@@ -124,7 +143,7 @@ def list_papers(
     limit_request(request, "drive-papers", identifier=str(current_user.id), limit=240, window=60, ip_limit=2000)
     _require_root()
     try:
-        files = list_files_recursive(_section_folder_id(section))  # cached: ~1ms warm
+        files = _list_section_files(section)  # warm caches make this ~1ms
     except HTTPException:
         raise
     except Exception as exc:
@@ -161,7 +180,7 @@ def list_categories(
     limit_request(request, "drive-categories", identifier=str(current_user.id), limit=240, window=60, ip_limit=2000)
     _require_root()
     try:
-        files = list_files_recursive(_section_folder_id(section))
+        files = _list_section_files(section)
     except HTTPException:
         raise
     except Exception as exc:
@@ -211,11 +230,10 @@ def get_download_url(
     # Validate against the cached tree first, then refresh once in case a new
     # upload is hidden behind the tree TTL.
     try:
-        section_folder_id = _section_folder_id(section)
-        files = list_files_recursive(section_folder_id)
+        files = _list_section_files(section)
         meta = next((f for f in files if f["id"] == file_id), None)
         if meta is None:
-            files = list_files_recursive(section_folder_id, force_refresh=True)
+            files = _list_section_files(section, force_refresh=True)
             meta = next((f for f in files if f["id"] == file_id), None)
     except HTTPException:
         raise
@@ -273,7 +291,11 @@ def get_download_url(
     name = meta["name"] if meta["name"].lower().endswith(".pdf") else meta["name"] + ".pdf"
     return DownloadUrlOut(
         download_id=download_id,
-        url=make_signed_download_url(file_id, name),
+        url=make_signed_download_url(
+            meta.get("drime_hash", file_id),
+            name,
+            source=meta.get("source", "google"),
+        ),
         expires_in=settings.download_link_ttl_seconds,
         quota=_quota_out(db, user_id),
     )
