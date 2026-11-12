@@ -24,14 +24,15 @@ _MAX_PAGES = 1000
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 _MARKING_PATH = re.compile(r"\bmark(?:ing)?\s*(?:keys?|schemes?)\b|\bmark\s*schemes?\b", re.I)
 
-# root id -> (cached timestamp, files grouped by section)
-_cache: dict[str, tuple[float, dict[str, list[dict[str, Any]]]]] = {}
+# (root id, section) -> (cached timestamp, files for that selected section).
+_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 _cache_lock = threading.Lock()
 
 
 def _folder_names(section: str) -> set[str]:
     field = {
         "papers": "drime_papers_folder_names",
+        "primary": "drime_primary_folder_names",
         "books": "drime_books_folder_names",
         "notes": "drime_notes_folder_names",
         "marking-keys": "drime_marking_keys_folder_names",
@@ -178,76 +179,76 @@ def _walk(folder_id: str, folder_name: str, path: tuple[str, ...], depth: int, o
                 output.append(normalized)
 
 
-def _build_section_files(root_id: str) -> dict[str, list[dict[str, Any]]]:
-    section_names = {section: _folder_names(section) for section in ("papers", "books", "notes", "marking-keys")}
-    result = {section: [] for section in section_names}
-    seen: set[tuple[str, str]] = set()
+def _build_section_files(root_id: str, section: str) -> list[dict[str, Any]]:
+    """Walk only the Drime root folders belonging to the requested section."""
+    section_names = {
+        name: _folder_names(name)
+        for name in ("papers", "primary", "books", "notes", "marking-keys")
+    }
+    # Older deployments may still explicitly configure Primary in the papers
+    # CSV. Give the dedicated school section precedence to prevent duplicates.
+    section_names["papers"].difference_update(section_names["primary"])
 
+    if section == "marking-keys":
+        # Marking folders may be nested below a MANEB/Mock folder, or directly
+        # below the Drime root. Inspect only those known paper roots plus any
+        # directly named marking-key roots, not Books, Notes, or Primary.
+        candidate_names = set(section_names["marking-keys"])
+        candidate_names.update(section_names["papers"])
+    else:
+        candidate_names = section_names[section]
+
+    results: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
     for root_entry in _list_children(root_id):
         if not _is_folder(root_entry):
             continue
         name = str(root_entry.get("name") or "").strip()
         folder_id = root_entry.get("id")
-        if not name or folder_id is None:
+        if not name or folder_id is None or name.casefold() not in candidate_names:
             continue
 
-        normalized_name = name.casefold()
-        matching_sections = [
-            section for section, names in section_names.items()
-            if normalized_name in names
-        ]
-        # Walk each top-level folder once. Besides its configured section,
-        # inspect paths for marking-key folders nested under MANEB or another
-        # top-level folder.
         collected: list[dict[str, Any]] = []
         _walk(str(folder_id), name, (name,), 1, collected)
-        for section in matching_sections:
-            for file in collected:
-                key = (section, file["drime_hash"])
-                if key not in seen:
-                    seen.add(key)
-                    result[section].append(file)
-
         for file in collected:
-            path = file.get("drime_path", ())
-            if _MARKING_PATH.search(" / ".join(path)):
-                key = ("marking-keys", file["drime_hash"])
-                if key not in seen:
-                    seen.add(key)
-                    result["marking-keys"].append(file)
+            path = " / ".join(file.get("drime_path", ()))
+            is_marking_key = bool(_MARKING_PATH.search(path))
+            if section == "marking-keys":
+                if not is_marking_key:
+                    continue
+            elif is_marking_key:
+                continue
 
-    # Marking folders directly configured above are already included; papers
-    # only include its configured roots and do not include marking-key paths.
-    for section in ("papers", "books", "notes"):
-        result[section] = [
-            file for file in result[section]
-            if not _MARKING_PATH.search(" / ".join(file.get("drime_path", ())))
-        ]
-    return result
+            file_hash = file["drime_hash"]
+            if file_hash not in seen_hashes:
+                seen_hashes.add(file_hash)
+                results.append(file)
+    return results
 
 
 def list_section_files(section: str, force_refresh: bool = False) -> list[dict[str, Any]]:
     """Return Drime PDFs' containing files for one of the library sections."""
     if not settings.drime_api_key:
         return []
-    if section not in {"papers", "books", "notes", "marking-keys"}:
+    if section not in {"papers", "primary", "books", "notes", "marking-keys"}:
         return []
 
     root_id = str(settings.drime_root_folder_id)
+    cache_key = (root_id, section)
     ttl = settings.drive_cache_ttl_seconds
     now = time.monotonic()
-    hit = _cache.get(root_id)
+    hit = _cache.get(cache_key)
     if not force_refresh and ttl > 0 and hit and now - hit[0] < ttl:
-        return list(hit[1].get(section, []))
+        return list(hit[1])
 
     with _cache_lock:
-        hit = _cache.get(root_id)
+        hit = _cache.get(cache_key)
         now = time.monotonic()
         if not force_refresh and ttl > 0 and hit and now - hit[0] < ttl:
-            return list(hit[1].get(section, []))
-        files_by_section = _build_section_files(root_id)
-        _cache[root_id] = (time.monotonic(), files_by_section)
-        return list(files_by_section.get(section, []))
+            return list(hit[1])
+        files = _build_section_files(root_id, section)
+        _cache[cache_key] = (time.monotonic(), files)
+        return list(files)
 
 
 def clear_cache() -> None:

@@ -2,8 +2,10 @@
 
 Drime is an optional second source. When `DRIME_API_KEY` is set, its files are
 merged into the existing Google Drive Papers, Books, Notes, and Marking Keys
-sections. The existing category filters, account quotas, reservation/confirm
-flow, and short-lived download URLs remain in effect.
+sections. Primary School files are exposed as a distinct `primary` listing for
+the frontend's school-level selector, while sharing the existing Papers quota.
+Category filters, reservation/confirm flow, and short-lived download URLs
+remain in effect.
 
 ## Deployment configuration
 
@@ -14,7 +16,8 @@ DRIME_API_KEY=<the key used by the working Drime uploader>
 DRIME_API_URL=https://app.drime.cloud/api/v1
 DRIME_ROOT_FOLDER_ID=1016158780
 DRIME_WORKSPACE_ID=0
-DRIME_PAPERS_FOLDER_NAMES=Primary,Mock,MANEB
+DRIME_PAPERS_FOLDER_NAMES=Mock,MANEB
+DRIME_PRIMARY_FOLDER_NAMES=Primary
 DRIME_BOOKS_FOLDER_NAMES=Books
 DRIME_NOTES_FOLDER_NAMES=Notes
 DRIME_MARKING_KEYS_FOLDER_NAMES=Marking Keys,Marking Schemes
@@ -31,7 +34,12 @@ fetches the file bytes after validating the backend's short-lived signature.
 Do not expose this key to the frontend or place it in a public repo.
 
 The adapter uses the Drime API's Bearer key, paginated `drive/file-entries`
-listing, and `file-entries/download/{hash}` downloads. The Worker accepts only
+listing, and `file-entries/download/{hash}` downloads. It scans only the roots
+mapped to the requested section and caches each section separately; Google and
+Drime scans run concurrently on a cold load. `GET /drive/papers` defaults to
+50 items (`limit` up to 200 with `offset` pagination). The frontend should
+request one 50-item batch at a time and load the next offset on scroll rather
+than fetching every page immediately. The Worker accepts only
 `/dl/google/{id}` and `/dl/drime/{hash}` links whose signature includes the
 provider name, so a Google URL cannot be changed into a Drime URL (or vice
 versa).

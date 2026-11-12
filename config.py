@@ -41,7 +41,8 @@ class Settings(BaseSettings):
     drime_api_url: str = "https://app.drime.cloud/api/v1"
     drime_root_folder_id: str = "1016158780"
     drime_workspace_id: int = 0
-    drime_papers_folder_names: str = "Primary,Mock,MANEB"
+    drime_papers_folder_names: str = "Mock,MANEB"
+    drime_primary_folder_names: str = "Primary"
     drime_books_folder_names: str = "Books"
     drime_notes_folder_names: str = "Notes"
     drime_marking_keys_folder_names: str = "Marking Keys,Marking Schemes"
