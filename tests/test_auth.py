@@ -161,5 +161,5 @@ def test_wrong_verification_code_includes_remaining_attempts(client):
     assert response.headers["x-error-code"] == "code_invalid"
     assert response.headers["x-attempts-remaining"] == "4"
     assert response.headers["access-control-expose-headers"] == (
-        "X-Error-Code, X-Attempts-Remaining, Retry-After"
+        "X-Error-Code, X-Attempts-Remaining, Retry-After, X-Total-Count"
     )

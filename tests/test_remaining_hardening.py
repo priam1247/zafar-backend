@@ -304,6 +304,29 @@ def test_papers_endpoint_supports_limit_and_offset(client, fake_drive_tree, veri
     response = client.get("/drive/papers?section=papers&limit=1&offset=1", headers=auth_headers(verified_user_token))
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == ["pdf-1"]
+    assert response.headers["x-total-count"] == "3"
+
+
+def test_papers_total_count_covers_both_sources_and_category_filters(
+    client, verified_user_token, monkeypatch
+):
+    import routers.drive as drive_router
+
+    # This is the combined Google + Drime result set before server pagination.
+    combined = [
+        {"id": "google-1", "name": "Primary Paper 1.pdf", "mimeType": "application/pdf", "category": "Standard 8"},
+        {"id": "drime-1", "name": "Primary Paper 2.pdf", "mimeType": "application/pdf", "category": "Standard 8"},
+        {"id": "google-2", "name": "Other Paper.pdf", "mimeType": "application/pdf", "category": "Standard 7"},
+    ]
+    monkeypatch.setattr(drive_router, "_list_section_files", lambda *_args, **_kwargs: combined)
+
+    response = client.get(
+        "/drive/papers?section=primary&category=Standard%208&limit=1&offset=0",
+        headers=auth_headers(verified_user_token),
+    )
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.headers["x-total-count"] == "2"
 
 
 def test_drive_list_routes_key_budgets_by_user_identifier(client, verified_user_token, monkeypatch):

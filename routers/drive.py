@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -143,6 +143,7 @@ def drive_health(current_user: User = Depends(get_current_user)):
 @router.get("/papers", response_model=list[PaperOut])
 def list_papers(
     request: Request,
+    response: Response,
     section: str = "papers",
     category: str | None = None,
     q: str | None = None,
@@ -161,6 +162,8 @@ def list_papers(
     matches (case-insensitive). ?q=<text> filters by filename, case-
     insensitive substring match, applied server-side across the selected
     section. `limit`/`offset` support incremental pages; the default is 50.
+    `X-Total-Count` reports the combined-source result count after filters and
+    before pagination, for showing an accurate total while pages load lazily.
     """
     limit_request(request, "drive-papers", identifier=str(current_user.id), limit=240, window=60, ip_limit=2000)
     _require_root()
@@ -180,6 +183,8 @@ def list_papers(
         files = [f for f in files if ql in f["name"].lower()]
 
     pdf_files = [f for f in files if f.get("mimeType") == "application/pdf"]
+    total_count = len(pdf_files)
+    response.headers["X-Total-Count"] = str(total_count)
     pdf_files = pdf_files[offset:offset + limit]
     return [
         PaperOut(
