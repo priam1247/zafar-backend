@@ -78,10 +78,10 @@ The Koyeb service `zafar-backend` runs on the Free plan in Frankfurt at
 `https://bloody-brigitta-ahzafar-de9b1709.koyeb.app`. Koyeb builds the existing
 `Dockerfile`, and `app.py` reads the `PORT` it sets.
 
-1. **Point the service at the new code.** The service currently deploys from
-   GitHub. Its source branch must contain `d1_dbapi.py` and the D1 changes.
-   Either merge the branch to `main`, or change the service's branch to
-   `arena/2cdfd4a3-zafar-backend`.
+1. **Point the service at the D1-capable code.** The service deploys from
+   GitHub; use `main` after the D1 support is merged, or select a maintained
+   branch/commit that contains `d1_dbapi.py` and the related database changes.
+   Avoid pinning a deployment to a short-lived Arena working branch.
 2. **Set the environment variables.** Replace the old Neon `DATABASE_URL` and
    keep the other variables (Drive, SMTP, download signing) as they are.
    ```

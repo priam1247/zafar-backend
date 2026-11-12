@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_drime_api_lists_mapped_sections_and_nested_marking_keys(monkeypatch):
     import drime_service
@@ -76,6 +78,16 @@ def test_drime_api_lists_mapped_sections_and_nested_marking_keys(monkeypatch):
     assert all(call[1]["Authorization"] == "Bearer test-drime-key" for call in calls)
     assert all(call[2]["workspaceId"] == 0 for call in calls)
     drime_service.clear_cache()
+
+
+def test_drime_adapter_refuses_non_vendor_api_hosts(monkeypatch):
+    import drime_service
+    from config import settings
+
+    monkeypatch.setattr(settings, "drime_api_key", "secret-key")
+    monkeypatch.setattr(settings, "drime_api_url", "http://attacker.example/api/v1")
+    with pytest.raises(RuntimeError, match="official HTTPS endpoint"):
+        drime_service._list_children("folder-id")
 
 
 def test_primary_drime_listing_shares_papers_quota_and_signed_flow(

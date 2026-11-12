@@ -16,7 +16,7 @@ from drive_service import find_child_folder, list_files_recursive, list_children
 import drime_service
 from rate_limit import limit_request
 from models import DownloadLog, User
-from routers.auth import _count_today_by_category, _quota_out
+from routers.auth import _quota_out
 from schemas import DownloadUrlOut, PaperOut
 
 router = APIRouter(prefix="/drive", tags=["drive"])
@@ -133,7 +133,7 @@ def drive_health(current_user: User = Depends(get_current_user)):
     _require_root()
     try:
         children = list_children(settings.drive_root_folder_id)
-    except Exception as exc:
+    except Exception:
         logger.exception("Drive listing failed")
         raise APIError(status_code=502, detail="The library could not be reached.", code="drive_unreachable")
     folders = sum(1 for child in children if child.get("mimeType") == "application/vnd.google-apps.folder")
@@ -171,7 +171,7 @@ def list_papers(
         files = _list_section_files(section)  # section-scoped, warm caches are fast
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
         logger.exception("Drive listing failed")
         raise APIError(status_code=502, detail="The library could not be reached.", code="drive_unreachable")
 
@@ -210,7 +210,7 @@ def list_categories(
         files = _list_section_files(section)
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
         logger.exception("Drive listing failed")
         raise APIError(status_code=502, detail="The library could not be reached.", code="drive_unreachable")
     return sorted(
@@ -264,7 +264,7 @@ def get_download_url(
             meta = next((f for f in files if f["id"] == file_id), None)
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
         logger.exception("Drive listing failed")
         raise APIError(status_code=502, detail="The library could not be reached.", code="drive_unreachable")
     if meta is None:

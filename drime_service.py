@@ -13,6 +13,7 @@ import re
 import threading
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -63,11 +64,26 @@ def _entry_list(payload: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     return [row for row in data if isinstance(row, dict)], meta
 
 
+def _api_base_url() -> str:
+    parsed = urlsplit(settings.drime_api_url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "app.drime.cloud"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.port not in (None, 443)
+    ):
+        raise RuntimeError("Drime API URL must use the official HTTPS endpoint")
+    return settings.drime_api_url.rstrip("/")
+
+
 def _list_children(folder_id: str) -> list[dict[str, Any]]:
     if not settings.drime_api_key:
         return []
 
-    url = f"{settings.drime_api_url.rstrip('/')}/drive/file-entries"
+    url = f"{_api_base_url()}/drive/file-entries"
     headers = {
         "Authorization": f"Bearer {settings.drime_api_key}",
         "Accept": "application/json",

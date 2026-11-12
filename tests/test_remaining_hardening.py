@@ -16,7 +16,6 @@ def test_six_simultaneous_downloads_cannot_exceed_quota(
     client, fake_drive_tree, verified_user_token, monkeypatch, tmp_path
 ):
     """The conditional INSERT atomically reserves exactly the remaining slots."""
-    import database
     import main
     import models
     from database import get_db
@@ -247,7 +246,6 @@ def test_section_id_cache_uses_tree_ttl(monkeypatch):
 
 
 def test_email_sends_are_counted_warned_and_capped(client, monkeypatch, caplog):
-    import email_utils
     from config import settings
 
     monkeypatch.setattr(settings, "email_daily_limit", 2)

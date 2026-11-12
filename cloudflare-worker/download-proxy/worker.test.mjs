@@ -58,6 +58,9 @@ test("HTML Drive interstitial returns an uncached 502", async () => {
     assert.equal(response.status, 502);
     assert.equal(response.headers.get("Cache-Control"), "no-store, private");
     assert.equal(response.headers.get("Cloudflare-CDN-Cache-Control"), "no-store");
+    assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.equal(response.headers.get("X-Frame-Options"), "DENY");
+    assert.equal(response.headers.get("Referrer-Policy"), "no-referrer");
     assert.equal(await response.text(), "Upstream returned a non-file page");
   } finally {
     globalThis.fetch = originalFetch;

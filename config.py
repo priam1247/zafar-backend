@@ -1,10 +1,13 @@
 from typing import Any
+from urllib.parse import urlsplit
 
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env")
+
     # No default on purpose: an unset JWT_SECRET_KEY should fail startup
     # loudly, not silently fall back to a committed value everyone can read.
     jwt_secret_key: str
@@ -64,11 +67,36 @@ class Settings(BaseSettings):
         validation_alias="ALLOWED_ORIGINS",
     )
 
+    @field_validator("forwarded_allow_ips")
+    @classmethod
+    def reject_untrusted_proxy_wildcard(cls, value: str) -> str:
+        if any(part.strip() == "*" for part in value.split(",")):
+            raise ValueError("FORWARDED_ALLOW_IPS must list trusted proxy IPs; wildcard is unsafe")
+        return value
+
     @property
     def allowed_origins(self) -> list[str]:
         origins = [origin.strip().rstrip("/") for origin in self.allowed_origins_csv.split(",") if origin.strip()]
         if not origins:
             raise ValueError("ALLOWED_ORIGINS must contain at least one origin")
+        for origin in origins:
+            parsed = urlsplit(origin)
+            local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+            if (
+                "*" in origin
+                or (parsed.scheme != "https" and not local_http)
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("ALLOWED_ORIGINS must contain exact HTTPS origins (HTTP is allowed only for localhost)")
+            try:
+                _ = parsed.port
+            except ValueError as exc:
+                raise ValueError("ALLOWED_ORIGINS contains an invalid port") from exc
         return origins
 
     @model_validator(mode="before")
@@ -83,26 +111,13 @@ class Settings(BaseSettings):
             "SMTP_USER": "smtp_user",
             "SMTP_PASS": "smtp_pass",
         }
-        missing = [name for name, field in required_fields.items() if not values.get(field)]
+        missing = [
+            name for name, field in required_fields.items()
+            if values.get(field) is None or not str(values.get(field)).strip()
+        ]
         if missing:
             raise ValueError("Missing required settings: " + ", ".join(missing))
         return values
-
-    def model_post_init(self, __context: Any) -> None:
-        required = {
-            "JWT_SECRET_KEY": self.jwt_secret_key,
-            "DOWNLOAD_PROXY_BASE_URL": self.download_proxy_base_url,
-            "DOWNLOAD_SIGNING_SECRET": self.download_signing_secret,
-            "GOOGLE_SERVICE_ACCOUNT_JSON": self.google_service_account_json,
-            "SMTP_USER": self.smtp_user,
-            "SMTP_PASS": self.smtp_pass,
-        }
-        missing = [name for name, value in required.items() if not value or not value.strip()]
-        if missing:
-            raise ValueError("Missing required settings: " + ", ".join(missing))
-
-    class Config:
-        env_file = ".env"
 
 
 settings = Settings()

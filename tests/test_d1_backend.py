@@ -12,7 +12,6 @@ import logging
 import os
 import re
 import sqlite3
-import sys
 
 import pytest
 from sqlalchemy import create_engine, func, insert, select
@@ -171,6 +170,14 @@ def test_missing_credentials_fail_clearly():
     transport = d1_dbapi.D1HTTPTransport("", "", "")
     with pytest.raises(d1_dbapi.InterfaceError, match="CLOUDFLARE_API_TOKEN"):
         transport.send({"sql": "SELECT 1", "params": []})
+
+
+def test_d1_transport_rejects_untrusted_endpoint():
+    with pytest.raises(ValueError, match="D1 endpoint"):
+        d1_dbapi.D1HTTPTransport(
+            "account", "database", "secret-token",
+            base_url="http://attacker.example/{account_id}/{database_id}",
+        )
 
 
 def test_unreachable_api_raises_operational_error():

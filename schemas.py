@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class UserRegister(BaseModel):
@@ -51,14 +51,13 @@ class ResetPassword(BaseModel):
 
 
 class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str | None = None
     email: str | None = None
     is_verified: bool
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class Token(BaseModel):

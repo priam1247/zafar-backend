@@ -20,9 +20,10 @@ folder (`1SWv792HexEVx7tHaSBIZvgxKwgb6-lp4`); override it only if the library
 root folder changes.
 
 The optional Drime Cloud source can be enabled with `DRIME_API_KEY`; when
-configured, Drime PDFs are merged into the same Papers, Books, Notes, and
-Marking Keys sections and use the same account quotas as Google Drive. The
-Drime API key must be stored privately in Koyeb and the download-proxy Worker.
+configured, its PDFs are combined with Google Drive by section. Primary School
+is exposed separately as `section=primary` and shares the existing Papers
+quota. The Drime API key must be stored privately in Koyeb and the download-
+proxy Worker.
 
 The only supported registration domain is `@gmail.com`: the current code
 verification flow uses Gmail SMTP and the policy is validated at registration,
@@ -39,13 +40,15 @@ See [`.env.example`](.env.example) for the complete environment reference.
 
 ## API/frontend contract notes
 
-- `GET /drive/papers?section=...` returns PDF items; `GET /drive/categories?section=...`
-  returns the distinct sorted immediate-parent folder names for data-driven chips.
+- `GET /drive/papers?section=...` returns PDF items (50 by default, with
+  `limit`/`offset` pagination); `X-Total-Count` is the filtered total across
+  Google Drive and Drime before pagination. `GET /drive/categories?section=...`
+  returns distinct sorted immediate-parent folder names for data-driven chips.
 - A missing item in the cached Drive tree triggers one forced refresh before a 404.
 - `POST /drive/refresh` is intentionally not exposed to ordinary users.
-- Auth and Drive responses use `Cache-Control: no-store`. API errors preserve their
-  string `detail` and may provide `X-Error-Code`, `X-Attempts-Remaining`, and
-  `Retry-After` headers.
+- Auth and Drive responses use `Cache-Control: no-store`. All API responses add
+  basic browser security headers. API errors preserve their string `detail` and
+  may provide `X-Error-Code`, `X-Attempts-Remaining`, and `Retry-After` headers.
 - Access tokens contain `sub` (internal username), `uid`, `name`, and `email`.
 - Login accepts email or a legacy username. Quotas are separate UTC calendar-day
   buckets: papers (10), books (3), notes (3), and marking keys (10), configurable
