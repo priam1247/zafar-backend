@@ -3,7 +3,11 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Form, Request, status
+from google.auth.exceptions import GoogleAuthError
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import hash_password, verify_password, create_access_token, get_current_user
@@ -24,6 +28,7 @@ from schemas import (
     UpdateName,
     ForgotPassword,
     ResetPassword,
+    GoogleCredential,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -255,6 +260,108 @@ def login(
             detail="Email not verified. Check your Gmail for the code.",
             code="email_not_verified",
         )
+    return Token(access_token=create_access_token(user))
+
+
+@router.post("/google", response_model=Token)
+def login_with_google(
+    request: Request,
+    payload: GoogleCredential,
+    db: Session = Depends(get_db),
+):
+    """Verify a Google Identity Services ID token and issue a Zafar JWT.
+
+    The browser sends Google's signed ID token, never an OAuth client secret.
+    Google sign-in is opt-in and stays unavailable until GOOGLE_CLIENT_ID is
+    configured on the API deployment.
+    """
+    if not settings.google_client_id.strip():
+        raise APIError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google sign-in is not configured",
+            code="google_not_configured",
+        )
+
+    try:
+        claims = google_id_token.verify_oauth2_token(
+            payload.credential,
+            google_requests.Request(),
+            audience=settings.google_client_id.strip(),
+        )
+    except (ValueError, GoogleAuthError):
+        raise APIError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google sign-in could not be verified. Please try again.",
+            code="google_invalid_token",
+        )
+
+    email = claims.get("email")
+    subject = claims.get("sub")
+    if (
+        not isinstance(email, str)
+        or not email.strip()
+        or not isinstance(subject, str)
+        or not subject.strip()
+        or claims.get("email_verified") is not True
+    ):
+        raise APIError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google sign-in requires a verified Google email address",
+            code="google_invalid_token",
+        )
+
+    email = email.strip().lower()
+    # Registration and email verification are Gmail-only; keep the same
+    # account policy for Google sign-in.
+    if not email.endswith("@gmail.com"):
+        raise APIError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only verified Gmail addresses are supported",
+            code="google_email_unsupported",
+        )
+
+    # Rate-limit by the verified account identity, not the shared public IP.
+    limit_request(request, "auth-google", email, limit=10, window=60, ip_limit=0)
+
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        display_name = claims.get("name")
+        if not isinstance(display_name, str) or not display_name.strip():
+            display_name = email.split("@", 1)[0]
+        # Google has already verified ownership; issue a random, unknown
+        # password so this account cannot be accessed via password login.
+        user = User(
+            email=email,
+            name=display_name.strip()[:100],
+            username=_generate_username(db, email),
+            hashed_password=hash_password(secrets.token_urlsafe(48)),
+            is_verified=True,
+        )
+        db.add(user)
+        try:
+            db.commit()
+            db.refresh(user)
+        except IntegrityError:
+            # Handle simultaneous first logins for the same account. Never
+            # hide unrelated persistence failures as successful sign-in.
+            db.rollback()
+            user = db.query(User).filter(User.email == email).first()
+            if user is None:
+                raise APIError(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Google sign-in could not create the account. Please try again.",
+                    code="google_account_unavailable",
+                )
+
+    if not user.is_verified:
+        # A verified Google email proves control of this address, including
+        # an account originally created through email-code registration.
+        user.is_verified = True
+        user.verification_code = None
+        user.code_expires_at = None
+        user.verification_attempts = 0
+        db.commit()
+
     return Token(access_token=create_access_token(user))
 
 

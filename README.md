@@ -30,6 +30,13 @@ verification flow uses Gmail SMTP and the policy is validated at registration,
 so the frontend should explain/check that before the student enters a password.
 Do not broaden the policy until delivery to other providers has been tested.
 
+Google Identity Services sign-in is available at `POST /auth/google`. It
+requires the frontend OAuth **Web client ID** in the API's `GOOGLE_CLIENT_ID`
+environment setting and the same ID in the frontend. The API verifies the
+signed ID token's audience and verified Gmail address; it does not use or need
+the OAuth client secret. With `GOOGLE_CLIENT_ID` unset, this endpoint returns
+`google_not_configured` and does not accept sign-ins.
+
 `ALLOWED_ORIGINS` is a comma-separated list of exact HTTPS origins, for example:
 
 ```text
