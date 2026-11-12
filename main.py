@@ -110,7 +110,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
-    expose_headers=["X-Error-Code", "X-Attempts-Remaining", "Retry-After"],
+    expose_headers=["X-Error-Code", "X-Attempts-Remaining", "Retry-After", "X-Total-Count"],
 )
 
 
