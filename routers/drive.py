@@ -1,5 +1,6 @@
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -26,14 +27,17 @@ logger = logging.getLogger(__name__)
 # to list.
 SECTION_FOLDERS = {
     "papers": "Past Papers",
+    "primary": "Primary",
     "books": "Books",
     "notes": "Notes",
     "marking-keys": "Marking Keys",
 }
 
-# Independent quota bucket for each section.
+# Primary School is its own browse section but shares the established papers
+# allowance; it does not create a second way to spend a new daily quota.
 SECTION_QUOTA_CATEGORY = {
     "papers": "paper",
+    "primary": "paper",
     "books": "book",
     "notes": "notes",
     "marking-keys": "marking_keys",
@@ -84,22 +88,39 @@ def _require_root():
         )
 
 
+def _list_google_section_files(section: str, force_refresh: bool) -> list[dict]:
+    if not settings.drive_root_folder_id:
+        return []
+    try:
+        folder_id = _section_folder_id(section)
+    except APIError as exc:
+        # A section may exist only in Drime while Google Drive remains
+        # configured for the other sections.
+        if exc.code == "section_unknown" and settings.drime_api_key:
+            return []
+        raise
+    return list_files_recursive(folder_id, force_refresh=force_refresh)
+
+
 def _list_section_files(section: str, force_refresh: bool = False) -> list[dict]:
-    """Combine Google Drive and optional Drime entries for one library section."""
-    files: list[dict] = []
+    """List the requested section from each enabled source concurrently."""
+    if section not in SECTION_FOLDERS:
+        raise APIError(status_code=400, detail=f"Unknown section '{section}'", code="section_unknown")
+
+    # The source adapters maintain independent section-scoped caches. On a
+    # cold cache, parallel requests make first-page latency the slower source's
+    # latency rather than the sum of Google and Drime latency.
+    if settings.drive_root_folder_id and settings.drime_api_key:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="library-source") as pool:
+            google_future = pool.submit(_list_google_section_files, section, force_refresh)
+            drime_future = pool.submit(drime_service.list_section_files, section, force_refresh)
+            return google_future.result() + drime_future.result()
+
     if settings.drive_root_folder_id:
-        try:
-            folder_id = _section_folder_id(section)
-        except APIError as exc:
-            # A section may exist only in Drime while the current Google
-            # Drive source remains configured for the other sections.
-            if exc.code != "section_unknown" or not settings.drime_api_key:
-                raise
-        else:
-            files.extend(list_files_recursive(folder_id, force_refresh=force_refresh))
+        return _list_google_section_files(section, force_refresh)
     if settings.drime_api_key:
-        files.extend(drime_service.list_section_files(section, force_refresh=force_refresh))
-    return files
+        return drime_service.list_section_files(section, force_refresh)
+    return []
 
 
 @router.get("/health")
@@ -125,7 +146,7 @@ def list_papers(
     section: str = "papers",
     category: str | None = None,
     q: str | None = None,
-    limit: int = Query(200, ge=1, le=1000),
+    limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
 ):
@@ -138,12 +159,13 @@ def list_papers(
 
     ?category=<name> filters to files whose immediate parent folder name
     matches (case-insensitive). ?q=<text> filters by filename, case-
-    insensitive substring match, applied server-side across the section.
+    insensitive substring match, applied server-side across the selected
+    section. `limit`/`offset` support incremental pages; the default is 50.
     """
     limit_request(request, "drive-papers", identifier=str(current_user.id), limit=240, window=60, ip_limit=2000)
     _require_root()
     try:
-        files = _list_section_files(section)  # warm caches make this ~1ms
+        files = _list_section_files(section)  # section-scoped, warm caches are fast
     except HTTPException:
         raise
     except Exception as exc:
