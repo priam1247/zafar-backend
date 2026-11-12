@@ -23,6 +23,9 @@ class Settings(BaseSettings):
 
     # Credentials/configuration required for the deployed application to work.
     google_service_account_json: str = ""
+    # OAuth web client ID used to validate Google Identity Services ID tokens.
+    # Empty disables Google sign-in until configured in the deployment environment.
+    google_client_id: str = ""
     # Established Zafar Materials (Sorted) Drive folder. Override with
     # DRIVE_ROOT_FOLDER_ID only when the library root is intentionally changed.
     drive_root_folder_id: str = "1SWv792HexEVx7tHaSBIZvgxKwgb6-lp4"

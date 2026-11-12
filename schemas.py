@@ -60,6 +60,10 @@ class UserOut(BaseModel):
     created_at: datetime
 
 
+class GoogleCredential(BaseModel):
+    credential: str = Field(min_length=1, max_length=16384)
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
