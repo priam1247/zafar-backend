@@ -1,11 +1,10 @@
 """
 Google Drive wrapper. Talks to the Drive v3 REST API directly instead of
-using googleapiclient.discovery.build(), which fetches and parses a large
-(~300KB) discovery document over the network on every cold start before
-it can make a single real API call — slow, and a bad fit for small/free
-container instances where that alone can eat the request's time/memory
-budget. httplib2 + google-auth-httplib2 are already pulled in transitively
-by google-api-python-client, so no new dependency is needed.
+using the discovery client, which fetches and parses a large discovery
+document before its first API call. This wrapper calls Drive v3 directly with
+Google-authenticated HTTP instead, keeping startup/network overhead lower.
+The required `google-auth-httplib2` and `httplib2` dependencies are explicit
+in requirements.txt; the full Google API discovery client is unnecessary.
 
 The recursive folder walk is still cached in-process with a TTL — the
 biggest latency win regardless of transport.
@@ -144,18 +143,6 @@ def list_files_recursive(folder_id: str, max_depth: int | None = None, force_ref
         return results
 
 
-def find_cached_file(root_folder_id: str, file_id: str):
-    """O(n) scan of the cached tree — avoids a Drive API call per download."""
-    for f in list_files_recursive(root_folder_id):
-        if f["id"] == file_id:
-            return f
-    return None
-
-
 def clear_cache():
     with _tree_lock:
         _tree_cache.clear()
-
-
-def get_file_metadata(file_id: str):
-    return _drive_get(f"files/{file_id}", {"fields": "id, name, mimeType, size"})

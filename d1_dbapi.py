@@ -26,6 +26,7 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from urllib.parse import quote, urlsplit
 
 try:  # used only to name the columns of zero-row SELECTs; see _select_column_names
     import sqlglot
@@ -145,10 +146,25 @@ class D1HTTPTransport(_Transport):
         base_url: str = BASE_URL,
         timeout: float = 15.0,
     ):
+        parsed = urlsplit(base_url)
+        loopback_host = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if (
+            (parsed.hostname != "api.cloudflare.com" and not loopback_host)
+            or (parsed.scheme != "https" and not (parsed.scheme == "http" and loopback_host))
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("D1 endpoint must be Cloudflare HTTPS or a loopback test endpoint")
+
         self._account_id = account_id or ""
         self._database_id = database_id or ""
         self._api_token = api_token or ""
-        self._url = base_url.format(account_id=self._account_id, database_id=self._database_id)
+        self._url = base_url.format(
+            account_id=quote(self._account_id, safe=""),
+            database_id=quote(self._database_id, safe=""),
+        )
         self._timeout = timeout
 
     def post(self, body: dict) -> dict:
@@ -168,7 +184,8 @@ class D1HTTPTransport(_Transport):
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            # The URL host is restricted above to Cloudflare or a loopback test host.
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:  # nosec B310
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             # Cloudflare returns JSON error bodies (bad token, bad SQL, ...).

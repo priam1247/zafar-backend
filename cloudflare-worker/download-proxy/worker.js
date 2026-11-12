@@ -22,6 +22,9 @@ function noStoreHeaders(extra = {}) {
   headers.set("Cache-Control", "no-store, private");
   headers.set("CDN-Cache-Control", "no-store");
   headers.set("Cloudflare-CDN-Cache-Control", "no-store");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("X-Frame-Options", "DENY");
+  headers.set("Referrer-Policy", "no-referrer");
   return headers;
 }
 
@@ -202,8 +205,6 @@ export default {
 
     const headers = noStoreHeaders(upstreamResponse.headers);
     headers.set("Content-Disposition", contentDispositionName(url.searchParams.get("name"), fileId));
-    headers.set("X-Content-Type-Options", "nosniff");
-    headers.set("Referrer-Policy", "no-referrer");
     headers.delete("Set-Cookie");
 
     // Preserve 206 and the upstream Content-Range/Accept-Ranges headers so

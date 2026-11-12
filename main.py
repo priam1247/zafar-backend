@@ -115,8 +115,12 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def private_api_responses(request: Request, call_next):
+async def security_headers(request: Request, call_next):
     response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     if request.url.path.startswith(("/auth/", "/drive/")):
         response.headers["Cache-Control"] = "no-store"
     return response
