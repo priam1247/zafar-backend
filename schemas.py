@@ -62,6 +62,7 @@ class UserOut(BaseModel):
 
 class GoogleCredential(BaseModel):
     credential: str = Field(min_length=1, max_length=16384)
+    totp_code: str = Field(default="", max_length=6)
 
 
 class Token(BaseModel):

@@ -19,8 +19,8 @@ from sqlalchemy.exc import IntegrityError as SAIntegrityError
 from sqlalchemy.orm import sessionmaker
 
 import d1_dbapi
-from database import Base
 import models  # noqa: F401 — registers tables on Base.metadata
+from database import Base
 from models import DownloadLog, User
 
 
@@ -233,7 +233,17 @@ def test_migration_copies_sqlite_data_into_d1(tmp_path, fake):
 
     target = d1_dbapi.make_engine(fake)
     copied = migrate.copy_database(source, target, Base.metadata)
-    assert copied == {"users": 2, "download_logs": 1, "email_send_counters": 0}
+    assert copied == {
+        "users": 2,
+        "download_logs": 1,
+        "email_send_counters": 0,
+        "admin_audit_log": 0,
+        "admin_requests": 0,
+        "admin_reports": 0,
+        "admin_site_settings": 0,
+        "search_log": 0,
+        "api_error_events": 0,
+    }
 
     with target.connect() as conn:
         rows = conn.execute(select(User.id, User.email, User.is_verified).order_by(User.id)).all()
@@ -346,10 +356,11 @@ def test_orm_lookup_with_no_match_returns_none(d1_session):
 @pytest.fixture()
 def d1_client(d1_engine, monkeypatch):
     """The real FastAPI app, with its DB dependency pointed at D1."""
-    import main
-    from database import get_db
     from fastapi.testclient import TestClient
     from sqlalchemy.orm import sessionmaker as _sm
+
+    import main
+    from database import get_db
 
     Session = _sm(bind=d1_engine, autoflush=False)
 
@@ -384,3 +395,31 @@ def test_login_with_verified_account_returns_token(d1_client, d1_session):
     resp = d1_client.post("/auth/login", data={"email": "troy@gmail.com", "password": "123456"})
     assert resp.status_code == 200
     assert resp.json()["access_token"]
+
+
+def test_d1_admin_mutation_and_audit_share_one_atomic_batch(d1_engine, d1_session, fake, monkeypatch):
+    import database
+    from models import AdminAuditLog
+    from routers.admin import _d1_audited_batch
+
+    monkeypatch.setattr(database, "engine", d1_engine)
+    with d1_session() as db:
+        actor = User(username="audit-owner", email="audit-owner@gmail.com", hashed_password="x",
+                     is_verified=True, role="owner", admin_totp_enabled=True)
+        target = User(username="audit-target", email="audit-target@gmail.com", hashed_password="x",
+                      is_verified=True)
+        db.add_all([actor, target])
+        db.commit()
+        actor_id, target_id = actor.id, target.id
+        before = fake.batch_count
+
+        changed = _d1_audited_batch(
+            db, actor, "user.suspend", str(target_id), {"reason": "test"},
+            [("UPDATE users SET suspended = 1 WHERE id = ?", (target_id,))],
+        )
+        assert changed == 1
+        assert fake.batch_count == before + 1
+        assert db.query(User).filter_by(id=target_id).one().suspended is True
+        audit = db.query(AdminAuditLog).filter_by(actor_user_id=actor_id).one()
+        assert audit.action == "user.suspend"
+        assert audit.target == str(target_id)

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Index
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -19,6 +19,13 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     password_changed_at = Column(DateTime(timezone=True), nullable=True)
+    role = Column(String, nullable=True, index=True)  # owner, editor, viewer; NULL = student
+    suspended = Column(Boolean, default=False, nullable=False)
+    signup_method = Column(String, default="email", nullable=False)
+    last_active_at = Column(DateTime(timezone=True), nullable=True)
+    admin_totp_secret = Column(String, nullable=True)  # Fernet-encrypted; never returned by API
+    admin_totp_enabled = Column(Boolean, default=False, nullable=False)
+    admin_totp_last_step = Column(Integer, default=0, nullable=False)
 
     is_verified = Column(Boolean, default=False, nullable=False)
     verification_code = Column(String, nullable=True)
@@ -79,3 +86,73 @@ class EmailSendCounter(Base):
 
     day = Column(String, primary_key=True)
     count = Column(Integer, nullable=False, default=0)
+
+
+class AdminAuditLog(Base):
+    __tablename__ = "admin_audit_log"
+
+    id = Column(Integer, primary_key=True)
+    at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    actor_user_id = Column(Integer, nullable=False, index=True)
+    actor_email = Column(String, nullable=False)
+    action = Column(String, nullable=False, index=True)
+    target = Column(String, nullable=False)
+    detail = Column(String, nullable=True)
+
+
+class AdminRequest(Base):
+    __tablename__ = "admin_requests"
+
+    id = Column(Integer, primary_key=True)
+    email = Column(String, nullable=True)
+    section = Column(String, nullable=True)
+    title = Column(String, nullable=False)
+    note = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="open", index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class AdminReport(Base):
+    __tablename__ = "admin_reports"
+
+    id = Column(Integer, primary_key=True)
+    email = Column(String, nullable=True)
+    file_id = Column(String, nullable=True)
+    file_name = Column(String, nullable=True)
+    reason = Column(String, nullable=True)
+    note = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="open", index=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class AdminSiteSettings(Base):
+    __tablename__ = "admin_site_settings"
+
+    id = Column(Integer, primary_key=True)  # singleton id=1
+    announcement = Column(String, nullable=False, default="")
+    maintenance = Column(Boolean, nullable=False, default=False)
+    featured_json = Column(String, nullable=False, default="[]")
+    limits_json = Column(String, nullable=False, default="{}")
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_by = Column(Integer, nullable=True)
+
+
+class SearchLog(Base):
+    __tablename__ = "search_log"
+
+    id = Column(Integer, primary_key=True)
+    q = Column(String, nullable=False)
+    results = Column(Integer, nullable=False)
+    section = Column(String, nullable=False)
+    at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+
+class ApiErrorEvent(Base):
+    __tablename__ = "api_error_events"
+
+    id = Column(Integer, primary_key=True)
+    at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+    route = Column(String, nullable=False, index=True)
+    status = Column(Integer, nullable=False)

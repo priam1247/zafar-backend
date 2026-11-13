@@ -96,11 +96,13 @@ def deliver_verification_code(db: Session, email: str, code: str) -> None:
         ) from exc
 
 
-def deliver_reset_code(db: Session, email: str, code: str) -> None:
+def deliver_reset_code(db: Session, email: str, code: str) -> bool:
     reserve_daily_email_send(db)
     try:
         send_reset_code(email, code)
+        return True
     except EmailDeliveryError:
-        # Reset is deliberately enumeration-safe, so the caller still gets
-        # the same generic response for known and unknown addresses.
+        # Public reset remains enumeration-safe. Admin callers may use the
+        # boolean to avoid claiming that a failed SMTP send succeeded.
         logger.exception("Password reset email delivery failed")
+        return False

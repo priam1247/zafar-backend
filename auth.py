@@ -35,18 +35,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def create_access_token(user: User) -> str:
+def create_access_token(user: User, *, mfa_verified: bool = False) -> str:
     issued_at = datetime.now(timezone.utc)
     expire = issued_at + timedelta(minutes=settings.jwt_expire_minutes)
+    claims = {
+        "sub": user.username,
+        "uid": user.id,
+        "name": user.name,
+        "email": user.email,
+        "iat": issued_at.timestamp(),
+        "exp": expire,
+    }
+    if mfa_verified:
+        claims["mfa"] = True
     return jwt.encode(
-        {
-            "sub": user.username,
-            "uid": user.id,
-            "name": user.name,
-            "email": user.email,
-            "iat": issued_at.timestamp(),
-            "exp": expire,
-        },
+        claims,
         settings.jwt_secret_key,
         algorithm=settings.jwt_algorithm,
     )
@@ -67,6 +70,18 @@ def get_current_user(
     user = db.query(User).filter(User.username == username).first()
     if user is None:
         raise _credentials_error
+    if user.suspended:
+        raise APIError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is suspended",
+            code="user_suspended",
+        )
+    if user.role == "owner" and (not user.admin_totp_enabled or payload.get("mfa") is not True):
+        raise APIError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner access requires a fresh authenticator verification",
+            code="admin_mfa_required",
+        )
     changed_at = user.password_changed_at
     if changed_at is not None:
         if changed_at.tzinfo is None:
@@ -74,6 +89,15 @@ def get_current_user(
         issued_at = payload.get("iat")
         if not isinstance(issued_at, (int, float)) or float(issued_at) < changed_at.timestamp():
             raise _credentials_error
+    # Admin activity is stored at most once per minute; ordinary traffic does
+    # not turn every API read into an additional database write.
+    now = datetime.now(timezone.utc)
+    last_active = user.last_active_at
+    if last_active is not None and last_active.tzinfo is None:
+        last_active = last_active.replace(tzinfo=timezone.utc)
+    if last_active is None or (now - last_active).total_seconds() >= 60:
+        user.last_active_at = now
+        db.commit()
     return user
 
 
