@@ -1,23 +1,24 @@
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+import drime_service
 from auth import get_current_user, make_signed_download_url
 from config import settings
-from errors import APIError
 from database import get_db
-from drive_service import find_child_folder, list_files_recursive, list_children
-import drime_service
+from drive_service import find_child_folder, list_children, list_files_recursive
+from errors import APIError
+from models import DownloadLog, SearchLog, User
 from rate_limit import limit_request
-from models import DownloadLog, User
 from routers.auth import _quota_out
 from schemas import DownloadUrlOut, PaperOut
+from site_settings import category_limit
 
 router = APIRouter(prefix="/drive", tags=["drive"])
 logger = logging.getLogger(__name__)
@@ -41,13 +42,6 @@ SECTION_QUOTA_CATEGORY = {
     "books": "book",
     "notes": "notes",
     "marking-keys": "marking_keys",
-}
-
-QUOTA_LIMIT_SETTING = {
-    "paper": "daily_paper_limit",
-    "book": "daily_book_limit",
-    "notes": "daily_notes_limit",
-    "marking_keys": "daily_marking_keys_limit",
 }
 
 # section -> (resolved_at, folder_id). Uses the same TTL as the Drive tree.
@@ -150,6 +144,7 @@ def list_papers(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Lists PDFs for a section. Does NOT return a download URL — the
@@ -184,6 +179,11 @@ def list_papers(
 
     pdf_files = [f for f in files if f.get("mimeType") == "application/pdf"]
     total_count = len(pdf_files)
+    # Keep real, server-side zero-result search terms for the admin upload
+    # queue. Store no account identity or token; the query is bounded.
+    if q and q.strip():
+        db.add(SearchLog(q=q.strip()[:300], results=total_count, section=section))
+        db.commit()
     response.headers["X-Total-Count"] = str(total_count)
     pdf_files = pdf_files[offset:offset + limit]
     return [
@@ -270,7 +270,7 @@ def get_download_url(
     if meta is None:
         raise APIError(status_code=404, detail="File not found in this section", code="file_missing")
 
-    limit = getattr(settings, QUOTA_LIMIT_SETTING[quota_category])
+    limit = category_limit(db, quota_category)
     user_id = current_user.id
     now = datetime.now(timezone.utc)
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)

@@ -231,10 +231,10 @@ def _is_transaction_control(sql: str) -> bool:
 
 
 def _convert_param(value):
-    if value is None or isinstance(value, (str, int, float)):
-        return value
     if isinstance(value, bool):  # bool is a subclass of int; keep it explicit
         return int(value)
+    if value is None or isinstance(value, (str, int, float)):
+        return value
     if isinstance(value, (_dt.datetime, _dt.date)):
         return value.isoformat(sep=" ")
     raise ProgrammingError(f"unsupported parameter type for D1: {type(value).__name__}")
@@ -253,6 +253,22 @@ class Connection:
     def commit(self) -> None:
         # Every statement is already committed by D1.
         self._writes = 0
+
+    def execute_batch(self, statements: list[tuple[str, tuple]]) -> list[dict]:
+        """Execute multiple SQL statements in D1's atomic batch transaction.
+
+        This explicit method is for operations (such as an admin mutation plus
+        its audit row) that must commit together. Ordinary SQLAlchemy sessions
+        still have D1's documented per-statement semantics.
+        """
+        self._ensure_open()
+        batch = [
+            {"sql": sql, "params": [_convert_param(value) for value in params]}
+            for sql, params in statements
+        ]
+        if not batch:
+            return []
+        return self._transport.send({"batch": batch})
 
     def rollback(self) -> None:
         if self._writes:

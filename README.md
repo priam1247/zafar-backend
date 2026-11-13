@@ -62,6 +62,15 @@ See [`.env.example`](.env.example) for the complete environment reference.
   with `DAILY_PAPER_LIMIT`, `DAILY_BOOK_LIMIT`, `DAILY_NOTES_LIMIT`, and
   `DAILY_MARKING_KEYS_LIMIT`. `/auth/quota` returns actual per-bucket usage.
 
+## Admin API
+
+The backend admin router, real-data metrics, role checks, audit log, persistent
+settings, moderation queues, exports, and first-owner/TOTP bootstrap are described
+in [the admin API deployment notes](docs/ADMIN_API.md). The frontend contract is
+in `priam1247/zafar-frontend/docs/admin-portal.md`. Note that the browser login
+form still needs an owner TOTP field before an owner can sign into the portal;
+never bypass the backend's owner MFA check to work around that UI gap.
+
 ## Run tests
 
 ```bash

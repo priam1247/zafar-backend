@@ -10,31 +10,63 @@ from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from auth import hash_password, verify_password, create_access_token, get_current_user
+from admin_security import decrypt_totp_secret, totp_step
+from auth import create_access_token, get_current_user, hash_password, verify_password
 from config import settings
-from errors import APIError
 from database import get_db
 from email_utils import deliver_reset_code, deliver_verification_code
-from models import User, DownloadLog
+from errors import APIError
+from models import DownloadLog, User
 from rate_limit import limit_request
 from schemas import (
-    UserRegister,
-    UserOut,
-    Token,
+    ForgotPassword,
+    GoogleCredential,
     QuotaOut,
     RegisterOut,
-    VerifyCode,
     ResendCode,
-    UpdateName,
-    ForgotPassword,
     ResetPassword,
-    GoogleCredential,
+    Token,
+    UpdateName,
+    UserOut,
+    UserRegister,
+    VerifyCode,
 )
+from site_settings import effective_limits
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger(__name__)
 
 CODE_TTL_MINUTES = 10
+
+
+def _verify_owner_totp(user: User, code: str, db: Session) -> bool:
+    if user.role != "owner":
+        return False
+    if not user.admin_totp_enabled or not user.admin_totp_secret:
+        raise APIError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner authenticator is not enrolled",
+            code="admin_mfa_unavailable",
+        )
+    try:
+        secret = decrypt_totp_secret(user.admin_totp_secret)
+    except ValueError:
+        logger.exception("Owner TOTP secret could not be decrypted")
+        raise APIError(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Owner authenticator verification is unavailable",
+            code="admin_mfa_unavailable",
+        )
+    step = totp_step(secret, code)
+    if step is None or step <= int(user.admin_totp_last_step or 0):
+        raise APIError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Enter the current authenticator code",
+            code="admin_totp_required",
+        )
+    user.admin_totp_last_step = step
+    db.commit()
+    return True
 
 
 def _generate_username(db: Session, email: str) -> str:
@@ -115,19 +147,20 @@ def _count_today_by_category(db: Session, user_id: int) -> dict[str, int]:
 
 def _quota_out(db: Session, user_id: int) -> QuotaOut:
     used = _count_today_by_category(db, user_id)
+    limits = effective_limits(db)
     return QuotaOut(
         papers_downloaded_today=used["paper"],
-        papers_limit=settings.daily_paper_limit,
-        papers_left=max(0, settings.daily_paper_limit - used["paper"]),
+        papers_limit=limits["papers"],
+        papers_left=max(0, limits["papers"] - used["paper"]),
         books_downloaded_today=used["book"],
-        books_limit=settings.daily_book_limit,
-        books_left=max(0, settings.daily_book_limit - used["book"]),
+        books_limit=limits["books"],
+        books_left=max(0, limits["books"] - used["book"]),
         notes_downloaded_today=used["notes"],
-        notes_limit=settings.daily_notes_limit,
-        notes_left=max(0, settings.daily_notes_limit - used["notes"]),
+        notes_limit=limits["notes"],
+        notes_left=max(0, limits["notes"] - used["notes"]),
         marking_keys_downloaded_today=used["marking_keys"],
-        marking_keys_limit=settings.daily_marking_keys_limit,
-        marking_keys_left=max(0, settings.daily_marking_keys_limit - used["marking_keys"]),
+        marking_keys_limit=limits["marking_keys"],
+        marking_keys_left=max(0, limits["marking_keys"] - used["marking_keys"]),
     )
 
 
@@ -154,6 +187,7 @@ def register(request: Request, payload: UserRegister, db: Session = Depends(get_
         name=payload.name.strip(),
         username=_generate_username(db, email),
         hashed_password=hash_password(payload.password),
+        signup_method="email",
         is_verified=False,
         verification_code=code,
         code_expires_at=expires,
@@ -231,6 +265,7 @@ def login(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
+    totp_code: str = Form(default=""),
     db: Session = Depends(get_db),
 ):
     """
@@ -254,13 +289,20 @@ def login(
             detail="Incorrect email or password",
             code="bad_credentials",
         )
+    if user.suspended:
+        raise APIError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is suspended",
+            code="user_suspended",
+        )
     if not user.is_verified:
         raise APIError(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Email not verified. Check your Gmail for the code.",
             code="email_not_verified",
         )
-    return Token(access_token=create_access_token(user))
+    mfa_verified = _verify_owner_totp(user, totp_code, db)
+    return Token(access_token=create_access_token(user, mfa_verified=mfa_verified))
 
 
 @router.post("/google", response_model=Token)
@@ -335,6 +377,7 @@ def login_with_google(
             name=display_name.strip()[:100],
             username=_generate_username(db, email),
             hashed_password=hash_password(secrets.token_urlsafe(48)),
+            signup_method="google",
             is_verified=True,
         )
         db.add(user)
@@ -353,6 +396,12 @@ def login_with_google(
                     code="google_account_unavailable",
                 )
 
+    if user.suspended:
+        raise APIError(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is suspended",
+            code="user_suspended",
+        )
     if not user.is_verified:
         # A verified Google email proves control of this address, including
         # an account originally created through email-code registration.
@@ -362,7 +411,8 @@ def login_with_google(
         user.verification_attempts = 0
         db.commit()
 
-    return Token(access_token=create_access_token(user))
+    mfa_verified = _verify_owner_totp(user, payload.totp_code, db)
+    return Token(access_token=create_access_token(user, mfa_verified=mfa_verified))
 
 
 @router.get("/me", response_model=UserOut)
