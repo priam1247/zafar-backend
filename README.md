@@ -66,10 +66,12 @@ See [`.env.example`](.env.example) for the complete environment reference.
 
 The backend admin router, real-data metrics, role checks, audit log, persistent
 settings, moderation queues, exports, and first-owner/TOTP bootstrap are described
-in [the admin API deployment notes](docs/ADMIN_API.md). The frontend contract is
-in `priam1247/zafar-frontend/docs/admin-portal.md`. Note that the browser login
-form still needs an owner TOTP field before an owner can sign into the portal;
-never bypass the backend's owner MFA check to work around that UI gap.
+in [the admin API deployment notes](docs/ADMIN_API.md). The current frontend
+contract is in `priam1247/zafar-frontend/docs/admin-portal.md`. Its login flow
+supports owner TOTP for password and Google sign-in; the student site also reads
+`/site-config`, and the portal exposes role management. Student submissions can
+be made through authenticated `POST /requests` and `POST /reports`; the current
+frontend has not yet added intake forms for these endpoints.
 
 ## Run tests
 

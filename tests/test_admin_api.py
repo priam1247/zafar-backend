@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import json
 import struct
 import time
 from datetime import datetime, timezone
@@ -87,6 +88,44 @@ def test_owner_users_search_returns_real_rows_and_total(client, db_session):
     assert response.json()[0]["signup_method"] == "email"
 
 
+def test_role_management_matches_frontend_conflict_codes_and_audits_success(client, db_session):
+    owner_id, _ = _make_user(db_session, email="owner-role-admin@gmail.com", role="owner", totp=True)
+    target_id, _ = _make_user(db_session, email="target-role-admin@gmail.com")
+    suspended_id, _ = _make_user(
+        db_session, email="suspended-role-admin@gmail.com", role="viewer", suspended=True, totp=True,
+    )
+    headers = _auth(_token(owner_id, db_session, mfa=True))
+
+    missing_totp = client.patch(f"/admin/users/{target_id}", json={"role": "owner"}, headers=headers)
+    assert missing_totp.status_code == 409
+    assert missing_totp.headers["x-error-code"] == "owner_mfa_not_enrolled"
+
+    suspended = client.patch(f"/admin/users/{suspended_id}", json={"role": "owner"}, headers=headers)
+    assert suspended.status_code == 409
+    assert suspended.headers["x-error-code"] == "owner_account_suspended"
+
+    last_owner = client.patch(f"/admin/users/{owner_id}", json={"role": "editor"}, headers=headers)
+    assert last_owner.status_code == 409
+    assert last_owner.headers["x-error-code"] == "last_owner"
+
+    other_owner_id, _ = _make_user(db_session, email="other-role-owner@gmail.com", role="owner", totp=True)
+    self_change = client.patch(f"/admin/users/{owner_id}", json={"role": "viewer"}, headers=headers)
+    assert self_change.status_code == 409
+    assert self_change.headers["x-error-code"] == "self_role_change"
+
+    changed = client.patch(f"/admin/users/{target_id}", json={"role": "editor"}, headers=headers)
+    assert changed.status_code == 200
+    assert changed.json()["role"] == "editor"
+    audit = client.get("/admin/audit?limit=50", headers=headers)
+    assert any(
+        row["action"] == "user.role" and row["target"] == str(target_id)
+        and json.loads(row["detail"]) == {"from": None, "to": "editor"}
+        for row in audit.json()
+    )
+    # The second owner remains unchanged and access is still role-scoped.
+    assert client.get("/admin/whoami", headers=_auth(_token(other_owner_id, db_session, mfa=True))).status_code == 200
+
+
 def test_suspend_mutation_is_immediate_and_audited(client, db_session):
     owner_id, _ = _make_user(db_session, email="owner-suspend@gmail.com", role="owner", totp=True)
     target_id, _ = _make_user(db_session, email="target-suspend@gmail.com")
@@ -165,6 +204,75 @@ def test_overview_counts_real_rows_zero_fills_days_and_omits_unknown_subjects(cl
     assert body["top_files"] == [{"id": "real-paper", "name": "MSCE Mathematics 2024.pdf", "section": "papers", "downloads": 1}]
     assert body["zero_result_searches"] == [{"q": "missing biology 2030", "count": 1}]
     assert "top_subjects" not in body
+
+
+def test_student_request_submission_enters_the_real_admin_queue(client, db_session, verified_user_token):
+    owner_id, _ = _make_user(db_session, email="owner-intake@gmail.com", role="owner", totp=True)
+    submitted = client.post(
+        "/requests",
+        json={"section": "primary", "title": "  Standard 8 science  ", "note": " Please add term two."},
+        headers=_auth(verified_user_token),
+    )
+    assert submitted.status_code == 201
+    assert submitted.headers["cache-control"] == "no-store"
+    assert submitted.json()["title"] == "Standard 8 science"
+    assert submitted.json()["status"] == "open"
+
+    queued = client.get("/admin/requests?status=open", headers=_auth(_token(owner_id, db_session, mfa=True)))
+    assert len(queued.json()) == 1
+    assert queued.json()[0]["email"] == "student@gmail.com"
+    assert queued.json()[0]["section"] == "primary"
+
+
+def test_student_report_requires_a_real_library_file_and_uses_catalogue_name(
+    client, db_session, fake_drive_tree, verified_user_token,
+):
+    owner_id, _ = _make_user(db_session, email="owner-report-intake@gmail.com", role="owner", totp=True)
+    spoofed = client.post(
+        "/reports", json={"file_id": "file-1", "reason": "broken download", "file_name": "Fake.pdf"},
+        headers=_auth(verified_user_token),
+    )
+    assert spoofed.status_code == 422
+
+    missing = client.post(
+        "/reports", json={"file_id": "invented-file", "reason": "broken"},
+        headers=_auth(verified_user_token),
+    )
+    assert missing.status_code == 404
+    assert missing.headers["x-error-code"] == "report_file_missing"
+
+    submitted = client.post(
+        "/reports", json={"file_id": "file-1", "reason": "broken download", "note": "  Link gives an error.  "},
+        headers=_auth(verified_user_token),
+    )
+    assert submitted.status_code == 201
+    assert submitted.headers["cache-control"] == "no-store"
+    assert submitted.json()["file_name"] == "Paper One.pdf"
+    assert submitted.json()["note"] == "Link gives an error."
+
+    queued = client.get("/admin/reports?status=open", headers=_auth(_token(owner_id, db_session, mfa=True)))
+    assert len(queued.json()) == 1
+    assert queued.json()[0]["email"] == "student@gmail.com"
+    assert queued.json()[0]["file_name"] == "Paper One.pdf"
+
+
+def test_student_intake_limits_are_per_account_not_shared_ip(client, db_session, verified_user_token):
+    headers = _auth(verified_user_token)
+    for index in range(3):
+        response = client.post(
+            "/requests", json={"section": "papers", "title": f"Missing paper {index}"}, headers=headers,
+        )
+        assert response.status_code == 201
+    limited = client.post("/requests", json={"section": "papers", "title": "One more"}, headers=headers)
+    assert limited.status_code == 429
+    assert limited.headers["x-error-code"] == "rate_limited"
+
+    other_id, _ = _make_user(db_session, email="other-student-intake@gmail.com")
+    other_response = client.post(
+        "/requests", json={"section": "papers", "title": "Another student's request"},
+        headers=_auth(_token(other_id, db_session)),
+    )
+    assert other_response.status_code == 201
 
 
 def test_editor_can_resolve_real_request_and_report(client, db_session):

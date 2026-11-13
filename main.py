@@ -17,6 +17,7 @@ from models import ApiErrorEvent
 from routers import admin as admin_router
 from routers import auth as auth_router
 from routers import drive as drive_router
+from routers import intake as intake_router
 from site_settings import public_settings
 
 
@@ -156,7 +157,10 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-    if request.url.path.startswith(("/auth/", "/drive/", "/admin/", "/site-config")):
+    if (
+        request.url.path.startswith(("/auth/", "/drive/", "/admin/", "/site-config"))
+        or request.url.path in {"/requests", "/reports"}
+    ):
         response.headers["Cache-Control"] = "no-store"
     if request.url.path.startswith("/admin"):
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
@@ -187,6 +191,7 @@ async def http_error_handler(request: Request, exc: HTTPException):
 app.include_router(auth_router.router)
 app.include_router(drive_router.router)
 app.include_router(admin_router.router)
+app.include_router(intake_router.router)
 
 
 @app.exception_handler(OperationalError)
