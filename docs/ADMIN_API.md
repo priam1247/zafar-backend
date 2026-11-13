@@ -26,6 +26,13 @@ before assigning its role:
 python -m scripts.make_owner --enroll editor@gmail.com
 ```
 
+If a hosted one-shot console cannot provide interactive input, use
+`python -m scripts.make_owner --enroll --non-interactive editor@gmail.com`.
+This mode skips the code-confirmation prompt, writes the new encrypted seed, and
+prints it for setup in the authenticator app. Use it only from a trusted
+provider console; re-run it to replace the seed if it was copied incorrectly.
+It does not change the account's existing role.
+
 `POST /auth/login` accepts an optional `totp_code` form field. Owners with a
 configured authenticator must provide it; returned owner JWTs carry the MFA
 proof and all later protected requests check that proof against the current DB
