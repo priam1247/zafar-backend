@@ -292,6 +292,38 @@ def test_editor_can_resolve_real_request_and_report(client, db_session):
     assert client.get("/admin/settings", headers=headers).status_code == 403
 
 
+def test_noninteractive_cli_reenrolls_owner_for_hosted_console(client, db_session, monkeypatch, capsys):
+    owner_id, _ = _make_user(db_session, email="owner-console@gmail.com", role="owner", totp=True)
+    import scripts.make_owner as owner_cli
+    from admin_security import decrypt_totp_secret
+
+    monkeypatch.setattr(owner_cli, "SessionLocal", db_session)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["make_owner", "--enroll", "--non-interactive", "owner-console@gmail.com"],
+    )
+    monkeypatch.setattr("builtins.input", lambda *_: (_ for _ in ()).throw(AssertionError("must not prompt")))
+    owner_cli.main()
+    output = capsys.readouterr().out
+    assert "saved without interactive verification" in output
+
+    db = db_session()
+    from models import AdminAuditLog, User
+    owner = db.query(User).filter_by(id=owner_id).one()
+    assert owner.role == "owner"
+    assert owner.admin_totp_enabled is True
+    secret = decrypt_totp_secret(owner.admin_totp_secret)
+    assert secret in output
+    assert db.query(AdminAuditLog).filter_by(action="admin.totp_enroll", target=str(owner_id)).count() == 1
+    db.close()
+
+    login = client.post(
+        "/auth/login",
+        data={"email": "owner-console@gmail.com", "password": "strong-password", "totp_code": _code(secret)},
+    )
+    assert login.status_code == 200
+
+
 def test_owner_login_requires_fresh_non_reused_totp(client, db_session):
     owner_id, secret = _make_user(db_session, email="owner-mfa@gmail.com", role="owner", totp=True)
     password = "strong-password"

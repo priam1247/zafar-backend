@@ -4,6 +4,8 @@ Usage (trusted terminal, with the production database environment loaded):
   python -m scripts.make_owner verified-user@gmail.com
   python -m scripts.make_owner --enroll verified-user@gmail.com
 
+For hosted one-shot consoles that cannot provide stdin, add --non-interactive.
+
 The first form assigns the first owner. The second only enrolls/re-enrolls TOTP;
 an existing owner can then assign that account a role in the admin portal.
 """
@@ -26,7 +28,7 @@ from database import SessionLocal
 from models import AdminAuditLog, User
 
 
-def enroll(email: str, *, bootstrap_owner: bool) -> None:
+def enroll(email: str, *, bootstrap_owner: bool, confirm_totp: bool = True) -> None:
     normalized = email.strip().lower()
     db = SessionLocal()
     try:
@@ -41,10 +43,16 @@ def enroll(email: str, *, bootstrap_owner: bool) -> None:
         print(provisioning_uri(secret, normalized))
         print("If scanning a QR is unavailable, enter this secret manually:")
         print(secret)
-        code = input("Enter the current six-digit authenticator code to confirm enrollment: ").strip()
-        step = totp_step(secret, code)
-        if step is None:
-            raise RuntimeError("Authenticator code was invalid; no role or secret was saved")
+        if confirm_totp:
+            code = input("Enter the current six-digit authenticator code to confirm enrollment: ").strip()
+            step = totp_step(secret, code)
+            if step is None:
+                raise RuntimeError("Authenticator code was invalid; no role or secret was saved")
+        else:
+            # Some hosted one-shot consoles cannot provide stdin to an
+            # interactive process. This mode is intentionally available only
+            # to operators already trusted to execute this CLI on the service.
+            step = 0
 
         encrypted = encrypt_totp_secret(secret)
         action = "owner.bootstrap" if bootstrap_owner else "admin.totp_enroll"
@@ -87,7 +95,10 @@ def enroll(email: str, *, bootstrap_owner: bool) -> None:
             ))
             db.commit()
         message = "First owner enabled" if bootstrap_owner else "Authenticator enrolled"
-        print(f"{message} for {normalized}; TOTP was verified and encrypted at rest.")
+        verification = "verified" if confirm_totp else "saved without interactive verification"
+        print(f"{message} for {normalized}; TOTP {verification} and encrypted at rest.")
+        if not confirm_totp:
+            print("Add the displayed secret to your authenticator before signing in.")
     except Exception:
         db.rollback()
         raise
@@ -98,10 +109,17 @@ def enroll(email: str, *, bootstrap_owner: bool) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Securely bootstrap admin role and TOTP.")
     parser.add_argument("--enroll", action="store_true", help="only enroll TOTP; do not assign the owner role")
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="skip the confirmation prompt for trusted hosted consoles without stdin",
+    )
     parser.add_argument("email", help="existing verified account email")
     args = parser.parse_args()
+    if args.non_interactive and not args.enroll:
+        parser.error("--non-interactive can only be used with --enroll")
     try:
-        enroll(args.email, bootstrap_owner=not args.enroll)
+        enroll(args.email, bootstrap_owner=not args.enroll, confirm_totp=not args.non_interactive)
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
 
