@@ -1,3 +1,6 @@
+from jose import jwt
+
+
 def _enable_google(monkeypatch):
     import config
 
@@ -43,6 +46,50 @@ def test_google_login_verifies_token_and_creates_verified_account(client, db_ses
     profile = client.get("/auth/me", headers={"Authorization": f"Bearer {response.json()['access_token']}"})
     assert profile.status_code == 200
     assert profile.json()["email"] == "student.name@gmail.com"
+
+
+def test_google_owner_login_uses_totp_code_from_json_body(client, db_session, monkeypatch):
+    _enable_google(monkeypatch)
+    import routers.auth as auth_router
+    from admin_security import encrypt_totp_secret, new_totp_secret
+    from auth import hash_password
+    from models import User
+
+    secret = new_totp_secret()
+    db = db_session()
+    owner = User(
+        email="google-owner@gmail.com", username="google-owner", name="Google Owner",
+        hashed_password=hash_password("strong-password"), is_verified=True, role="owner",
+        signup_method="google", admin_totp_secret=encrypt_totp_secret(secret), admin_totp_enabled=True,
+    )
+    db.add(owner)
+    db.commit()
+    db.close()
+    monkeypatch.setattr(
+        auth_router.google_id_token,
+        "verify_oauth2_token",
+        lambda *args, **kwargs: {
+            "sub": "google-owner-subject", "email": "google-owner@gmail.com", "email_verified": True,
+        },
+    )
+
+    missing = client.post("/auth/google", json={"credential": "signed-token"})
+    assert missing.status_code == 401
+    assert missing.headers["x-error-code"] == "admin_totp_required"
+
+    # The frontend sends the second factor alongside the retained Google ID
+    # token. Keep this as an API contract test without duplicating the TOTP
+    # generator already exercised on the password-login path.
+    original_verify = auth_router._verify_owner_totp
+    monkeypatch.setattr(
+        auth_router,
+        "_verify_owner_totp",
+        lambda user, code, session: True if code == "123456" else original_verify(user, code, session),
+    )
+    accepted = client.post("/auth/google", json={"credential": "signed-token", "totp_code": "123456"})
+    assert accepted.status_code == 200
+    claims = jwt.decode(accepted.json()["access_token"], "test-secret-do-not-use-in-prod", algorithms=["HS256"])
+    assert claims["mfa"] is True
 
 
 def test_google_login_rejects_unverified_or_non_gmail_identity(client, monkeypatch):
