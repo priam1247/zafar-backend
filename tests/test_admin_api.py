@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
+from conftest import auth_headers
 from jose import jwt
 
 
@@ -56,15 +57,11 @@ def _token(user_id, db_session, *, mfa=False):
     return token
 
 
-def _auth(token):
-    return {"Authorization": f"Bearer {token}"}
-
-
 def test_admin_requires_admin_role_and_enforces_viewer_scope(client, db_session):
     student_id, _ = _make_user(db_session, email="student-admin-test@gmail.com")
     viewer_id, _ = _make_user(db_session, email="viewer-admin-test@gmail.com", role="viewer")
-    assert client.get("/admin/whoami", headers=_auth(_token(student_id, db_session))).status_code == 403
-    headers = _auth(_token(viewer_id, db_session))
+    assert client.get("/admin/whoami", headers=auth_headers(_token(student_id, db_session))).status_code == 403
+    headers = auth_headers(_token(viewer_id, db_session))
     assert client.get("/admin/whoami", headers=headers).json()["role"] == "viewer"
     assert client.get("/admin/overview", headers=headers).status_code == 200
     denied = client.get("/admin/users", headers=headers)
@@ -80,7 +77,7 @@ def test_owner_users_search_returns_real_rows_and_total(client, db_session):
     db.add(DownloadLog(user_id=target_id, file_id="real-file", file_name="Actual.pdf", category="paper", confirmed=True))
     db.commit()
     db.close()
-    response = client.get("/admin/users?q=amina&limit=10&offset=0", headers=_auth(_token(owner_id, db_session, mfa=True)))
+    response = client.get("/admin/users?q=amina&limit=10&offset=0", headers=auth_headers(_token(owner_id, db_session, mfa=True)))
     assert response.status_code == 200
     assert response.headers["x-total-count"] == "1"
     assert response.json()[0]["email"] == "amina.real@gmail.com"
@@ -94,7 +91,7 @@ def test_role_management_matches_frontend_conflict_codes_and_audits_success(clie
     suspended_id, _ = _make_user(
         db_session, email="suspended-role-admin@gmail.com", role="viewer", suspended=True, totp=True,
     )
-    headers = _auth(_token(owner_id, db_session, mfa=True))
+    headers = auth_headers(_token(owner_id, db_session, mfa=True))
 
     missing_totp = client.patch(f"/admin/users/{target_id}", json={"role": "owner"}, headers=headers)
     assert missing_totp.status_code == 409
@@ -123,26 +120,26 @@ def test_role_management_matches_frontend_conflict_codes_and_audits_success(clie
         for row in audit.json()
     )
     # The second owner remains unchanged and access is still role-scoped.
-    assert client.get("/admin/whoami", headers=_auth(_token(other_owner_id, db_session, mfa=True))).status_code == 200
+    assert client.get("/admin/whoami", headers=auth_headers(_token(other_owner_id, db_session, mfa=True))).status_code == 200
 
 
 def test_suspend_mutation_is_immediate_and_audited(client, db_session):
     owner_id, _ = _make_user(db_session, email="owner-suspend@gmail.com", role="owner", totp=True)
     target_id, _ = _make_user(db_session, email="target-suspend@gmail.com")
     token = _token(owner_id, db_session, mfa=True)
-    response = client.post(f"/admin/users/{target_id}/suspend", json={"suspended": True, "reason": "verified report"}, headers=_auth(token))
+    response = client.post(f"/admin/users/{target_id}/suspend", json={"suspended": True, "reason": "verified report"}, headers=auth_headers(token))
     assert response.status_code == 200
     assert response.json()["suspended"] is True
-    denied = client.get("/auth/me", headers=_auth(_token(target_id, db_session)))
+    denied = client.get("/auth/me", headers=auth_headers(_token(target_id, db_session)))
     assert denied.status_code == 403
     assert denied.headers["x-error-code"] == "user_suspended"
-    audit = client.get("/admin/audit?limit=50", headers=_auth(token))
+    audit = client.get("/admin/audit?limit=50", headers=auth_headers(token))
     assert any(row["action"] == "user.suspend" and row["target"] == str(target_id) for row in audit.json())
 
 
 def test_owner_cannot_suspend_or_delete_own_session(client, db_session):
     owner_id, _ = _make_user(db_session, email="only-owner@gmail.com", role="owner", totp=True)
-    headers = _auth(_token(owner_id, db_session, mfa=True))
+    headers = auth_headers(_token(owner_id, db_session, mfa=True))
     suspend = client.post(f"/admin/users/{owner_id}/suspend", json={"suspended": True}, headers=headers)
     assert suspend.status_code == 409
     assert suspend.headers["x-error-code"] == "self_suspend"
@@ -153,7 +150,7 @@ def test_owner_cannot_suspend_or_delete_own_session(client, db_session):
 
 def test_admin_settings_are_persisted_and_change_live_quota(client, db_session, fake_drive_tree):
     owner_id, _ = _make_user(db_session, email="owner-settings@gmail.com", role="owner", totp=True)
-    headers = _auth(_token(owner_id, db_session, mfa=True))
+    headers = auth_headers(_token(owner_id, db_session, mfa=True))
     response = client.patch("/admin/settings", json={
         "announcement": "New papers added", "maintenance": True,
         "featured": ["file-1"], "limits": {"papers": 7},
@@ -173,7 +170,7 @@ def test_admin_settings_are_persisted_and_change_live_quota(client, db_session, 
 def test_featured_setting_rejects_ids_not_in_live_library(client, db_session, fake_drive_tree):
     owner_id, _ = _make_user(db_session, email="owner-featured@gmail.com", role="owner", totp=True)
     response = client.patch("/admin/settings", json={"featured": ["fabricated-id"]},
-                            headers=_auth(_token(owner_id, db_session, mfa=True)))
+                            headers=auth_headers(_token(owner_id, db_session, mfa=True)))
     assert response.status_code == 422
     assert response.headers["x-error-code"] == "admin_featured_file_missing"
 
@@ -193,7 +190,7 @@ def test_overview_counts_real_rows_zero_fills_days_and_omits_unknown_subjects(cl
     db.add(SearchLog(q="missing biology 2030", results=0, section="papers", at=today))
     db.commit()
     db.close()
-    response = client.get("/admin/overview?days=3", headers=_auth(_token(owner_id, db_session, mfa=True)))
+    response = client.get("/admin/overview?days=3", headers=auth_headers(_token(owner_id, db_session, mfa=True)))
     assert response.status_code == 200
     body = response.json()
     assert body["users"]["total"] == 2
@@ -211,14 +208,14 @@ def test_student_request_submission_enters_the_real_admin_queue(client, db_sessi
     submitted = client.post(
         "/requests",
         json={"section": "primary", "title": "  Standard 8 science  ", "note": " Please add term two."},
-        headers=_auth(verified_user_token),
+        headers=auth_headers(verified_user_token),
     )
     assert submitted.status_code == 201
     assert submitted.headers["cache-control"] == "no-store"
     assert submitted.json()["title"] == "Standard 8 science"
     assert submitted.json()["status"] == "open"
 
-    queued = client.get("/admin/requests?status=open", headers=_auth(_token(owner_id, db_session, mfa=True)))
+    queued = client.get("/admin/requests?status=open", headers=auth_headers(_token(owner_id, db_session, mfa=True)))
     assert len(queued.json()) == 1
     assert queued.json()[0]["email"] == "student@gmail.com"
     assert queued.json()[0]["section"] == "primary"
@@ -230,34 +227,34 @@ def test_student_report_requires_a_real_library_file_and_uses_catalogue_name(
     owner_id, _ = _make_user(db_session, email="owner-report-intake@gmail.com", role="owner", totp=True)
     spoofed = client.post(
         "/reports", json={"file_id": "file-1", "reason": "broken download", "file_name": "Fake.pdf"},
-        headers=_auth(verified_user_token),
+        headers=auth_headers(verified_user_token),
     )
     assert spoofed.status_code == 422
 
     missing = client.post(
         "/reports", json={"file_id": "invented-file", "reason": "broken"},
-        headers=_auth(verified_user_token),
+        headers=auth_headers(verified_user_token),
     )
     assert missing.status_code == 404
     assert missing.headers["x-error-code"] == "report_file_missing"
 
     submitted = client.post(
         "/reports", json={"file_id": "file-1", "reason": "broken download", "note": "  Link gives an error.  "},
-        headers=_auth(verified_user_token),
+        headers=auth_headers(verified_user_token),
     )
     assert submitted.status_code == 201
     assert submitted.headers["cache-control"] == "no-store"
     assert submitted.json()["file_name"] == "Paper One.pdf"
     assert submitted.json()["note"] == "Link gives an error."
 
-    queued = client.get("/admin/reports?status=open", headers=_auth(_token(owner_id, db_session, mfa=True)))
+    queued = client.get("/admin/reports?status=open", headers=auth_headers(_token(owner_id, db_session, mfa=True)))
     assert len(queued.json()) == 1
     assert queued.json()[0]["email"] == "student@gmail.com"
     assert queued.json()[0]["file_name"] == "Paper One.pdf"
 
 
 def test_student_intake_limits_are_per_account_not_shared_ip(client, db_session, verified_user_token):
-    headers = _auth(verified_user_token)
+    headers = auth_headers(verified_user_token)
     for index in range(3):
         response = client.post(
             "/requests", json={"section": "papers", "title": f"Missing paper {index}"}, headers=headers,
@@ -270,7 +267,7 @@ def test_student_intake_limits_are_per_account_not_shared_ip(client, db_session,
     other_id, _ = _make_user(db_session, email="other-student-intake@gmail.com")
     other_response = client.post(
         "/requests", json={"section": "papers", "title": "Another student's request"},
-        headers=_auth(_token(other_id, db_session)),
+        headers=auth_headers(_token(other_id, db_session)),
     )
     assert other_response.status_code == 201
 
@@ -285,7 +282,7 @@ def test_editor_can_resolve_real_request_and_report(client, db_session):
     db.commit()
     req_id, report_id = req.id, report.id
     db.close()
-    headers = _auth(_token(editor_id, db_session))
+    headers = auth_headers(_token(editor_id, db_session))
     assert client.get("/admin/requests?status=open", headers=headers).json()[0]["title"] == "Missing 2028 paper"
     assert client.patch(f"/admin/requests/{req_id}", json={"status": "done"}, headers=headers).json()["status"] == "done"
     assert client.patch(f"/admin/reports/{report_id}", json={"status": "resolved"}, headers=headers).json()["status"] == "resolved"
@@ -343,7 +340,7 @@ def test_owner_login_requires_fresh_non_reused_totp(client, db_session):
 def test_owner_export_uses_expiring_signed_link_and_sanitizes_csv(client, db_session):
     owner_id, _ = _make_user(db_session, email="owner-export@gmail.com", role="owner", totp=True)
     _make_user(db_session, email='=HYPERLINK("bad")@gmail.com')
-    headers = _auth(_token(owner_id, db_session, mfa=True))
+    headers = auth_headers(_token(owner_id, db_session, mfa=True))
     created = client.post("/admin/export/users", json={}, headers=headers)
     assert created.status_code == 200
     data = urlsplit(created.json()["url"])
@@ -360,14 +357,14 @@ def test_owner_export_uses_expiring_signed_link_and_sanitizes_csv(client, db_ses
 
 def test_admin_no_store_and_noindex_headers(client, db_session):
     viewer_id, _ = _make_user(db_session, email="viewer-headers@gmail.com", role="viewer")
-    response = client.get("/admin/whoami", headers=_auth(_token(viewer_id, db_session)))
+    response = client.get("/admin/whoami", headers=auth_headers(_token(viewer_id, db_session)))
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-robots-tag"] == "noindex, nofollow"
 
 
 def test_zero_result_search_is_recorded_from_real_drive_response(client, db_session, fake_drive_tree, verified_user_token):
-    response = client.get("/drive/papers?section=papers&q=missing+biology+2031", headers=_auth(verified_user_token))
+    response = client.get("/drive/papers?section=papers&q=missing+biology+2031", headers=auth_headers(verified_user_token))
     assert response.status_code == 200
     assert response.json() == []
     from models import SearchLog
@@ -380,7 +377,7 @@ def test_zero_result_search_is_recorded_from_real_drive_response(client, db_sess
 
 def test_ops_omits_metrics_without_a_configured_real_source(client, db_session):
     owner_id, _ = _make_user(db_session, email="owner-ops@gmail.com", role="owner", totp=True)
-    response = client.get("/admin/ops", headers=_auth(_token(owner_id, db_session, mfa=True)))
+    response = client.get("/admin/ops", headers=auth_headers(_token(owner_id, db_session, mfa=True)))
     assert response.status_code == 200
     data = response.json()
     assert data["db"]["kind"] == "sqlite"

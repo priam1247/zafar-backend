@@ -26,6 +26,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 import database  # noqa: E402
 
 
+def auth_headers(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture()
 def db_session(monkeypatch):
     """

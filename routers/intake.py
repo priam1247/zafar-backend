@@ -1,7 +1,6 @@
 """Student submissions for the admin moderation queues."""
 from __future__ import annotations
 
-from datetime import timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request, status
@@ -13,18 +12,30 @@ from auth import get_current_user
 from errors import APIError
 from models import AdminReport, AdminRequest, User
 from rate_limit import limit_request
+from routers.admin import _iso
 from routers.drive import SECTION_FOLDERS, _list_section_files
 
 router = APIRouter(tags=["student submissions"])
 Section = Literal["papers", "primary", "books", "notes", "marking-keys"]
 
 
-class RequestSubmission(BaseModel):
+class SubmissionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("note")
+    @classmethod
+    def clean_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class RequestSubmission(SubmissionBody):
     section: Section
     title: str = Field(min_length=1, max_length=160)
-    note: str | None = Field(default=None, max_length=2000)
 
     @field_validator("title")
     @classmethod
@@ -34,21 +45,10 @@ class RequestSubmission(BaseModel):
             raise ValueError("title must not be blank")
         return value
 
-    @field_validator("note")
-    @classmethod
-    def clean_note(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        return value or None
 
-
-class ReportSubmission(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class ReportSubmission(SubmissionBody):
     file_id: str = Field(min_length=1, max_length=256)
     reason: str = Field(min_length=1, max_length=160)
-    note: str | None = Field(default=None, max_length=2000)
 
     @field_validator("file_id", "reason")
     @classmethod
@@ -57,22 +57,6 @@ class ReportSubmission(BaseModel):
         if not value:
             raise ValueError("value must not be blank")
         return value
-
-    @field_validator("note")
-    @classmethod
-    def clean_note(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        return value or None
-
-
-def _timestamp(value) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.isoformat()
 
 
 def _actor_email(user: User) -> str:
@@ -106,7 +90,7 @@ def submit_request(
         "title": row.title,
         "note": row.note,
         "status": row.status,
-        "created_at": _timestamp(row.created_at),
+        "created_at": _iso(row.created_at),
     }
 
 
@@ -155,5 +139,5 @@ def submit_report(
         "reason": row.reason,
         "note": row.note,
         "status": row.status,
-        "created_at": _timestamp(row.created_at),
+        "created_at": _iso(row.created_at),
     }
