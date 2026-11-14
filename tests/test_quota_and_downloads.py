@@ -33,6 +33,28 @@ def test_download_enforces_quota(client, fake_drive_tree, verified_user_token, d
     assert resp.status_code == 429
 
 
+def test_completed_download_reduces_quota_on_ticket_and_refresh(client, fake_drive_tree, verified_user_token):
+    headers = auth_headers(verified_user_token)
+    initial_response = client.get("/auth/quota", headers=headers)
+    assert initial_response.headers["cache-control"] == "no-store"
+    initial = initial_response.json()
+    assert initial["papers_left"] == initial["papers_limit"]
+
+    ticket = client.post("/drive/download/file-1?section=papers", headers=headers)
+    assert ticket.status_code == 200
+    ticket_quota = ticket.json()["quota"]
+    assert ticket_quota["papers_downloaded_today"] == 1
+    assert ticket_quota["papers_left"] == ticket_quota["papers_limit"] - 1
+
+    confirmed = client.post(f"/drive/confirm/{ticket.json()['download_id']}", headers=headers)
+    assert confirmed.status_code == 200
+    refreshed_response = client.get("/auth/quota", headers=headers)
+    assert refreshed_response.headers["cache-control"] == "no-store"
+    refreshed = refreshed_response.json()
+    assert refreshed["papers_downloaded_today"] == 1
+    assert refreshed["papers_left"] == initial["papers_limit"] - 1
+
+
 def test_download_logs_row_per_download(client, fake_drive_tree, verified_user_token, db_session):
     headers = auth_headers(verified_user_token)
     client.post("/drive/download/file-1?section=papers", headers=headers)

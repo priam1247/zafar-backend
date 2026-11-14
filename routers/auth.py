@@ -2,7 +2,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Form, Request, status
+from fastapi import APIRouter, Depends, Form, Request, Response, status
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
@@ -516,10 +516,17 @@ def reset_password(request: Request, payload: ResetPassword, db: Session = Depen
 
 
 @router.get("/quota", response_model=QuotaOut)
-def get_quota(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_quota(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     Computed from today's DownloadLog rows rather than a stored counter —
     survives server restarts with no extra bookkeeping, and resets itself
     naturally at midnight since "today" always means the current date.
     """
+    # This personalized, frequently changing count must never be reused from a
+    # browser or intermediary cache after a download or page refresh.
+    response.headers["Cache-Control"] = "no-store"
     return _quota_out(db, current_user.id)
