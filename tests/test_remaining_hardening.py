@@ -4,12 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from conftest import auth_headers
 from fastapi import HTTPException
 from starlette.requests import Request
-
-
-def auth_headers(token):
-    return {"Authorization": f"Bearer {token}"}
 
 
 def test_six_simultaneous_downloads_cannot_exceed_quota(

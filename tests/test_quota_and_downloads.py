@@ -1,5 +1,4 @@
-def _auth_headers(token):
-    return {"Authorization": f"Bearer {token}"}
+from conftest import auth_headers
 
 
 def test_list_papers_requires_auth(client, fake_drive_tree):
@@ -13,7 +12,7 @@ def test_list_papers_omits_download_url(client, fake_drive_tree, verified_user_t
     the quota-bypass hole the signed-URL redesign closes. Only
     /drive/download/{id} should mint a URL.
     """
-    resp = client.get("/drive/papers", headers=_auth_headers(verified_user_token))
+    resp = client.get("/drive/papers", headers=auth_headers(verified_user_token))
     assert resp.status_code == 200
     for paper in resp.json():
         assert "download_url" not in paper
@@ -22,7 +21,7 @@ def test_list_papers_omits_download_url(client, fake_drive_tree, verified_user_t
 
 def test_download_enforces_quota(client, fake_drive_tree, verified_user_token, db_session):
     """DAILY_PAPER_LIMIT is set to 3 in tests/conftest.py."""
-    headers = _auth_headers(verified_user_token)
+    headers = auth_headers(verified_user_token)
 
     for _ in range(3):
         resp = client.post("/drive/download/file-1?section=papers", headers=headers)
@@ -35,7 +34,7 @@ def test_download_enforces_quota(client, fake_drive_tree, verified_user_token, d
 
 
 def test_download_logs_row_per_download(client, fake_drive_tree, verified_user_token, db_session):
-    headers = _auth_headers(verified_user_token)
+    headers = auth_headers(verified_user_token)
     client.post("/drive/download/file-1?section=papers", headers=headers)
 
     from models import DownloadLog
@@ -46,13 +45,13 @@ def test_download_logs_row_per_download(client, fake_drive_tree, verified_user_t
 
 
 def test_download_unknown_file_id_404s(client, fake_drive_tree, verified_user_token):
-    resp = client.post("/drive/download/does-not-exist?section=papers", headers=_auth_headers(verified_user_token))
+    resp = client.post("/drive/download/does-not-exist?section=papers", headers=auth_headers(verified_user_token))
     assert resp.status_code == 404
 
 
 def test_book_and_paper_quotas_are_independent(client, fake_drive_tree, verified_user_token):
     """DAILY_BOOK_LIMIT is 2 in tests/conftest.py, separate from papers."""
-    headers = _auth_headers(verified_user_token)
+    headers = auth_headers(verified_user_token)
 
     resp = client.post("/drive/download/file-1?section=papers", headers=headers)
     assert resp.status_code == 200
@@ -103,7 +102,7 @@ def test_make_signed_download_url_fails_without_signing_config(monkeypatch):
 
 
 def test_categories_endpoint_returns_distinct_sorted_categories(client, fake_drive_tree, verified_user_token):
-    response = client.get("/drive/categories?section=papers", headers=_auth_headers(verified_user_token))
+    response = client.get("/drive/categories?section=papers", headers=auth_headers(verified_user_token))
     assert response.status_code == 200
     assert response.json() == ["Books", "MSCE Maneb"]
     assert response.headers["cache-control"] == "no-store"
@@ -123,14 +122,14 @@ def test_download_force_refreshes_stale_tree_before_404(client, monkeypatch, ver
     monkeypatch.setattr(drive_router, "_section_folder_id", lambda section: "resolved-folder-id")
     response = client.post(
         "/drive/download/fresh-file?section=papers",
-        headers=_auth_headers(verified_user_token),
+        headers=auth_headers(verified_user_token),
     )
     assert response.status_code == 200
     assert calls == [False, True]
 
 
 def test_drive_refresh_route_is_removed(client, verified_user_token):
-    response = client.post("/drive/refresh", headers=_auth_headers(verified_user_token))
+    response = client.post("/drive/refresh", headers=auth_headers(verified_user_token))
     assert response.status_code == 404
 
 
@@ -156,7 +155,7 @@ def test_api_cors_allows_only_new_production_origin(client):
 
 
 def test_each_section_has_an_independent_daily_quota(client, fake_drive_tree, verified_user_token):
-    headers = _auth_headers(verified_user_token)
+    headers = auth_headers(verified_user_token)
     sections_and_limits = {
         "papers": 3,
         "books": 2,
@@ -190,7 +189,7 @@ def test_each_section_has_an_independent_daily_quota(client, fake_drive_tree, ve
 def test_download_without_section_is_refused(client, fake_drive_tree, verified_user_token):
     response = client.post(
         "/drive/download/file-1",
-        headers=_auth_headers(verified_user_token),
+        headers=auth_headers(verified_user_token),
     )
     assert response.status_code == 422
 
@@ -221,7 +220,7 @@ def test_a_note_cannot_be_downloaded_as_a_paper(client, monkeypatch, verified_us
         lambda folder_id, max_depth=6, force_refresh=False: notes if folder_id == "notes" else papers,
     )
 
-    headers = _auth_headers(verified_user_token)
+    headers = auth_headers(verified_user_token)
     refused = client.post("/drive/download/note-1?section=papers", headers=headers)
     assert refused.status_code == 404
 
